@@ -64,3 +64,10 @@ CREATE TABLE IF NOT EXISTS match_logs (
   loser_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+INSERT INTO cards (card_id, side, rarity, enabled) VALUES
+('test_human_001', 'human', 'common', TRUE),
+('test_human_002', 'human', 'common', TRUE),
+('test_god_001', 'god', 'common', TRUE),
+('test_neutral_001', 'neutral', 'common', TRUE)
+ON CONFLICT (card_id) DO NOTHING;
