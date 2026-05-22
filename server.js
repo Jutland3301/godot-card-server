@@ -137,6 +137,106 @@ async function giveTestStarterCards(userId) {
 }
 
 // =============================
+// Setup DB
+// =============================
+
+async function handleSetupDb(req, res) {
+  if (!requireDb(res)) return;
+
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS cards (
+        card_id TEXT PRIMARY KEY,
+        side TEXT NOT NULL DEFAULT 'neutral',
+        rarity TEXT NOT NULL DEFAULT 'common',
+        enabled BOOLEAN NOT NULL DEFAULT TRUE
+      );
+
+      CREATE TABLE IF NOT EXISTS user_cards (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        card_id TEXT NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id, card_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS decks (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        side TEXT NOT NULL DEFAULT 'human',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS deck_cards (
+        deck_id INTEGER NOT NULL REFERENCES decks(id) ON DELETE CASCADE,
+        card_id TEXT NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (deck_id, card_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS pack_logs (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        pack_type TEXT NOT NULL DEFAULT 'test',
+        opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS pack_results (
+        pack_log_id INTEGER NOT NULL REFERENCES pack_logs(id) ON DELETE CASCADE,
+        card_id TEXT NOT NULL,
+        amount INTEGER NOT NULL DEFAULT 1
+      );
+
+      CREATE TABLE IF NOT EXISTS rank_profiles (
+        user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        rating INTEGER NOT NULL DEFAULT 1000,
+        rank_points INTEGER NOT NULL DEFAULT 0,
+        wins INTEGER NOT NULL DEFAULT 0,
+        losses INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS match_logs (
+        id SERIAL PRIMARY KEY,
+        player1_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        player2_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        winner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        loser_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      INSERT INTO cards (card_id, side, rarity, enabled) VALUES
+      ('test_human_001', 'human', 'common', TRUE),
+      ('test_human_002', 'human', 'common', TRUE),
+      ('test_god_001', 'god', 'common', TRUE),
+      ('test_neutral_001', 'neutral', 'common', TRUE)
+      ON CONFLICT (card_id) DO NOTHING;
+    `);
+
+    sendJson(res, 200, {
+      ok: true,
+      message: "Database setup completed"
+    });
+  } catch (e) {
+    console.error("setup db error:", e);
+    sendJson(res, 500, {
+      ok: false,
+      error: "database setup failed",
+      detail: e.message
+    });
+  }
+}
+
+// =============================
 // HTTP API
 // =============================
 
@@ -198,7 +298,8 @@ async function handleRegister(req, res) {
     console.error("register error:", e);
     sendJson(res, 500, {
       ok: false,
-      error: "register failed"
+      error: "register failed",
+      detail: e.message
     });
   }
 }
@@ -261,7 +362,8 @@ async function handleLogin(req, res) {
     console.error("login error:", e);
     sendJson(res, 500, {
       ok: false,
-      error: "login failed"
+      error: "login failed",
+      detail: e.message
     });
   }
 }
@@ -299,7 +401,8 @@ async function handleCollection(req, res) {
     console.error("collection error:", e);
     sendJson(res, 500, {
       ok: false,
-      error: "failed to load collection"
+      error: "failed to load collection",
+      detail: e.message
     });
   }
 }
@@ -317,7 +420,8 @@ async function handleDbTest(req, res) {
     console.error("db test error:", e);
     sendJson(res, 500, {
       ok: false,
-      error: "database connection failed"
+      error: "database connection failed",
+      detail: e.message
     });
   }
 }
@@ -343,6 +447,11 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && url.pathname === "/db_test") {
     await handleDbTest(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/setup_db") {
+    await handleSetupDb(req, res);
     return;
   }
 
