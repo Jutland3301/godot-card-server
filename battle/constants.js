@@ -1,135 +1,336 @@
 "use strict";
 
-const C = {
-  STARTING_HP: 20,
-  STARTING_HAND_SIZE: 3,
-  STARTING_MANA: 0,
-  MANA_GAIN_PER_TURN: 1,
-  MAX_MANA: 10,
-  TURN_TIME_LIMIT_SECONDS: 45.0,
-  MAX_HAND_SIZE: 7,
-  MAX_BOARD_SIZE: 5,
+const STARTING_HP = 20;
+const STARTING_HAND_SIZE = 4;
+const MAX_HAND_SIZE = 7;
+const MAX_BOARD_SIZE = 5;
+const MAX_MANA = 10;
+const MANA_GAIN_PER_TURN = 1;
+const TURN_TIME_LIMIT_SECONDS = 45.0;
 
-  CARD_TYPE_SPELL: "spell",
-  CARD_TYPE_UNIT: "unit",
+const SEAT_A = "A";
+const SEAT_B = "B";
 
-  TARGET_NONE: "none",
-  TARGET_FRIENDLY_PLAYER: "friendly_player",
-  TARGET_ENEMY_PLAYER: "enemy_player",
-  TARGET_ANY_ENEMY: "any_enemy",
-  TARGET_ANY_FRIENDLY: "any_friendly",
-  TARGET_ANY_UNIT: "any_unit",
-  TARGET_ENEMY_UNIT: "enemy_unit",
-  TARGET_FRIENDLY_UNIT: "friendly_unit",
+const OWNER_PLAYER1 = "player1";
+const OWNER_PLAYER2 = "player2";
 
-  ACTION_NONE: "none",
-  ACTION_SPELL: "spell",
-  ACTION_UNIT_ATTACK: "unit_attack",
-  ACTION_ABILITY: "ability",
+const CARD_TYPE_SPELL = "spell";
+const CARD_TYPE_UNIT = "unit";
 
-  TRIGGER_BATTLECRY: "battlecry",
-  TRIGGER_AURA: "aura",
-  TRIGGER_ON_UNIT_PLAYED: "on_unit_played",
-  TRIGGER_WHEN_KILLS: "when_kills",
-  TRIGGER_WHEN_DESTROYED: "when_destroyed",
-  TRIGGER_TURN_START: "turn_start",
-  TRIGGER_ON_SPELL_PLAYED: "on_spell_played",
-  TRIGGER_ON_ALLY_UNIT_ATTACK: "on_ally_unit_attack",
-  TRIGGER_TURN_END: "turn_end",
-  TRIGGER_WHEN_ATTACKED: "when_attacked",
-  TRIGGER_ON_ALLY_UNIT_DAMAGED: "on_ally_unit_damaged",
+const CARD_SIDE_HUMAN = "human";
+const CARD_SIDE_GOD = "god";
+const CARD_SIDE_NEUTRAL = "neutral";
 
-  KEYWORD_RUSH: "rush",
-  KEYWORD_HASTE: "haste",
-  KEYWORD_TAUNT: "taunt",
-  KEYWORD_UNTRICKABLE: "untrickable",
-  KEYWORD_RICOCHET: "ricochet",
-  KEYWORD_IMMOBILE: "immobile",
-  KEYWORD_INVINCIBLE: "invincible",
-  KEYWORD_DEADLY: "deadly",
+const EFFECT_DAMAGE = "damage";
+const EFFECT_HEAL = "heal";
+const EFFECT_DRAW = "draw";
+const EFFECT_UNIT = "unit";
+const EFFECT_NONE = "none";
 
-  EFFECT_NONE: "none",
-  EFFECT_DAMAGE: "damage",
-  EFFECT_HEAL: "heal",
-  EFFECT_DRAW: "draw",
-  EFFECT_UNIT: "unit",
-  EFFECT_DESTROY_UNIT: "destroy_unit",
-  EFFECT_ADD_KEYWORD: "add_keyword",
-  EFFECT_BUFF_DECK_TRAIT: "buff_deck_trait",
-  EFFECT_HEAL_ALL_ALLIES_GAIN_MAX_HP: "heal_all_allies_gain_max_hp",
-  EFFECT_REDUCE_ENEMY_MAX_HP_THEN_ADD_COPIES: "reduce_enemy_max_hp_then_add_copies",
-  EFFECT_ADD_ZERO_COST_COPIES_OF_LAST_SPELL: "add_zero_cost_copies_of_last_spell",
-  EFFECT_DRAW_RANDOM_TRAIT_FROM_DECK_INCREASE_COST: "draw_random_trait_from_deck_increase_cost",
-  EFFECT_HAP_HAZARD: "hap_hazard",
-  EFFECT_DAMAGE_BY_BOARD_TRAIT_COUNT: "damage_by_board_trait_count",
-  EFFECT_ADD_KEYWORDS_TO_UNIT: "add_keywords_to_unit",
-  EFFECT_RESURRECT_TRAIT_UNITS_FROM_GRAVEYARD: "resurrect_trait_units_from_graveyard",
-  EFFECT_TEMPORARY_IMMOBILE_ALL_ENEMY_UNITS: "temporary_immobile_all_enemy_units",
-  EFFECT_DESTROY_FRIENDLY_TRAIT_UNIT_COPY_TO_HAND_BUFF: "destroy_friendly_trait_unit_copy_to_hand_buff",
-  EFFECT_RETURN_RANDOM_HAND_UNIT_DRAW_ANOTHER_TRAIT_UNIT: "return_random_hand_unit_draw_another_trait_unit",
-  EFFECT_MASTERWORK_OF_ART: "masterwork_of_art",
-  EFFECT_RUNIC_TUNING: "runic_tuning",
-  EFFECT_LAMENTATION_OF_LIFE: "lamentation_of_life",
-  EFFECT_INCANTATION_OF_MINSTREL: "incantation_of_minstrel",
-  EFFECT_LIGHTNING_CEREMONY: "lightning_ceremony",
-  EFFECT_SCAVENGE_COMMAND: "scavenge_command",
-  EFFECT_DUEL_ON_SEA: "duel_on_sea",
-  EFFECT_RIME_OF_THE_ANCIENT_MARINER: "rime_of_the_ancient_mariner",
-  EFFECT_ENCOMPASSED_COMPASS: "encompassed_compass",
-  EFFECT_STORM_AND_TIDES: "storm_and_tides",
-  EFFECT_CALL_OF_OMEN: "call_of_omen",
-  EFFECT_BUFF_ALL_ALLY_UNITS: "buff_all_ally_units",
-  EFFECT_POETRY_OF_RESILIENCE: "poetry_of_resilience",
-  EFFECT_CONVIVIAL_HUMMING: "convivial_humming",
+const EFFECT_BUFF_DECK_TRAIT = "buff_deck_trait";
+const EFFECT_ADD_KEYWORD = "add_keyword";
+const EFFECT_HEAL_ALL_ALLIES_GAIN_MAX_HP = "heal_all_allies_gain_max_hp";
+const EFFECT_DESTROY_UNIT = "destroy_unit";
+const EFFECT_REDUCE_ENEMY_MAX_HP_THEN_ADD_COPIES = "reduce_enemy_max_hp_then_add_copies";
+const EFFECT_ADD_ZERO_COST_COPIES_OF_LAST_SPELL = "add_zero_cost_copies_of_last_spell";
+const EFFECT_DRAW_RANDOM_TRAIT_FROM_DECK_INCREASE_COST = "draw_random_trait_from_deck_increase_cost";
+const EFFECT_HAP_HAZARD = "hap_hazard";
+const EFFECT_DAMAGE_BY_BOARD_TRAIT_COUNT = "damage_by_board_trait_count";
+const EFFECT_ADD_KEYWORDS_TO_UNIT = "add_keywords_to_unit";
+const EFFECT_RESURRECT_TRAIT_UNITS_FROM_GRAVEYARD = "resurrect_trait_units_from_graveyard";
+const EFFECT_TEMPORARY_IMMOBILE_ALL_ENEMY_UNITS = "temporary_immobile_all_enemy_units";
+const EFFECT_DESTROY_FRIENDLY_TRAIT_UNIT_COPY_TO_HAND_BUFF = "destroy_friendly_trait_unit_copy_to_hand_buff";
+const EFFECT_RETURN_RANDOM_HAND_UNIT_DRAW_ANOTHER_TRAIT_UNIT = "return_random_hand_unit_draw_another_trait_unit";
+const EFFECT_MASTERWORK_OF_ART = "masterwork_of_art";
+const EFFECT_RUNIC_TUNING = "runic_tuning";
+const EFFECT_LAMENTATION_OF_LIFE = "lamentation_of_life";
+const EFFECT_INCANTATION_OF_MINSTREL = "incantation_of_minstrel";
+const EFFECT_RIME_OF_THE_ANCIENT_MARINER = "rime_of_the_ancient_mariner";
+const EFFECT_ENCOMPASSED_COMPASS = "encompassed_compass";
+const EFFECT_LIGHTNING_CEREMONY = "lightning_ceremony";
+const EFFECT_SCAVENGE_COMMAND = "scavenge_command";
+const EFFECT_DUEL_ON_SEA = "duel_on_sea";
+const EFFECT_STORM_AND_TIDES = "storm_and_tides";
+const EFFECT_CALL_OF_OMEN = "call_of_omen";
+const EFFECT_BUFF_ALL_ALLY_UNITS = "buff_all_ally_units";
+const EFFECT_POETRY_OF_RESILIENCE = "poetry_of_resilience";
+const EFFECT_CONVIVIAL_HUMMING = "convivial_humming";
 
-  ABILITY_EFFECT_GAIN_MANA: "gain_mana",
-  ABILITY_EFFECT_DAMAGE: "damage",
-  ABILITY_EFFECT_BUFF_TRAIT: "buff_trait",
-  ABILITY_EFFECT_GRANT_KEYWORDS_TO_TRAIT: "grant_keywords_to_trait",
-  ABILITY_EFFECT_DRAW: "draw",
-  ABILITY_EFFECT_BUFF_RANDOM_HAND_TRAIT: "buff_random_hand_trait",
-  ABILITY_EFFECT_COPY_SELF_TO_HAND: "copy_self_to_hand",
-  ABILITY_EFFECT_COPY_SELF_TO_BOARD: "copy_self_to_board",
-  ABILITY_EFFECT_SPELL_DAMAGE_BONUS: "spell_damage_bonus",
-  ABILITY_EFFECT_REDUCE_HAND_SPELL_COST: "reduce_hand_spell_cost",
-  ABILITY_EFFECT_DRAW_RANDOM_SPELL_FROM_DECK: "draw_random_spell_from_deck",
-  ABILITY_EFFECT_REMOVE_KEYWORDS_FROM_PLAYED_UNIT: "remove_keywords_from_played_unit",
-  ABILITY_EFFECT_BURN_SPELL_FROM_HAND_THEN_BUFF_SELF: "burn_spell_from_hand_then_buff_self",
-  ABILITY_EFFECT_ADD_COPIES_TO_DECK: "add_copies_to_deck",
-  ABILITY_EFFECT_REDUCE_ENEMY_MAX_HP: "reduce_enemy_max_hp",
-  ABILITY_EFFECT_LOSE_STATS_FOR_OTHER_ALLY_UNITS: "lose_stats_for_other_ally_units",
-  ABILITY_EFFECT_BUFF_SELF: "buff_self",
-  ABILITY_EFFECT_MODIFY_HAND_COST_BY_TRAIT: "modify_hand_cost_by_trait",
-  ABILITY_EFFECT_BUFF_OTHER_FRIENDLY_TRAIT_UNITS: "buff_other_friendly_trait_units",
-  ABILITY_EFFECT_DAMAGE_RANDOM_ENEMY_UNIT_OR_FACE: "damage_random_enemy_unit_or_face",
-  ABILITY_EFFECT_SUMMON_CARDS: "summon_cards",
-  ABILITY_EFFECT_DESTROY_LOWEST_HEALTH_ENEMY_UNIT: "destroy_lowest_health_enemy_unit",
-  ABILITY_EFFECT_DESTROY_FRIENDLY_UNIT_GAIN_STATS: "destroy_friendly_unit_gain_stats",
-  ABILITY_EFFECT_DAMAGE_ENEMY_LEADER_ON_ALLY_ATTACK: "damage_enemy_leader_on_ally_attack",
-  ABILITY_EFFECT_REMOVE_IMMOBILE_SET_ATTACK_FOR_TRAIT: "remove_immobile_set_attack_for_trait",
-  ABILITY_EFFECT_RETURN_RANDOM_HAND_TRAIT_CARD_THEN_DAMAGE_ALL_ENEMY_UNITS: "return_random_hand_trait_card_then_damage_all_enemy_units",
-  ABILITY_EFFECT_DESTROY_ENEMY_UNIT_AND_HEAL_LEADER: "destroy_enemy_unit_and_heal_leader",
-  ABILITY_EFFECT_GAIN_ATTACK_FROM_ALLIED_TRAIT_ATTACK_TOTAL: "gain_attack_from_allied_trait_attack_total",
-  ABILITY_EFFECT_DRAW_CARD_THAT_COSTS_MORE: "draw_card_that_costs_more",
-  ABILITY_EFFECT_DRAW_RANDOM_TRAIT_UNIT_FROM_DECK: "draw_random_trait_unit_from_deck",
-  ABILITY_EFFECT_LOOK_TOP_DECK_KEEP_OR_BOTTOM: "look_top_deck_keep_or_bottom",
-  ABILITY_EFFECT_ADD_CARD_TO_HAND: "add_card_to_hand",
-  ABILITY_EFFECT_GAIN_TEMPORARY_KEYWORD: "gain_temporary_keyword",
-  ABILITY_EFFECT_ADD_CARD_TO_HAND_IF_TRAIT_PLAYED_COUNT: "add_card_to_hand_if_trait_played_count",
-  ABILITY_EFFECT_REMOVE_KEYWORD_THEN_BUFF_SELF: "remove_keyword_then_buff_self",
-  ABILITY_EFFECT_SUMMON_THREE_KEYWORD_COPIES: "summon_three_keyword_copies",
-  ABILITY_EFFECT_DESTROY_ALL_OTHER_UNITS_AND_FULL_HEAL_LEADER: "destroy_all_other_units_and_full_heal_leader",
-  ABILITY_EFFECT_DAMAGE_PLAYED_UNIT: "damage_played_unit",
-  ABILITY_EFFECT_BUFF_ATTACKER: "buff_attacker",
-  ABILITY_EFFECT_HEAL_DAMAGED_ALLY_GADGET_AND_DAMAGE_ENEMY_LEADER: "heal_damaged_ally_gadget_and_damage_enemy_leader",
+const EFFECT_NOBLES_OBLIGE = "nobles_oblige";
+const EFFECT_ECONOMICS_OVERFLOW = "economics_overflow";
+const EFFECT_HUMBLE_LIBRARIAN = "humble_librarian";
+const EFFECT_TARNISHED_BOOKSHELF = "tarnished_bookshelf";
+const EFFECT_SCRIBE_OF_HISTORY = "scribe_of_history";
+const EFFECT_FORBIDDEN_BOOK = "forbidden_book";
+const EFFECT_BLIND_RESEARCHER = "blind_researcher";
+const EFFECT_ALL_KNOWING_ARCHIVIST = "all_knowing_archivist";
+const EFFECT_MONOCHRO_BLUEPRINT = "monochro_blueprint";
+const EFFECT_BOOK_OF_RUSHWATER = "book_of_rushwater";
+const EFFECT_INTRODUCTION_TO_ARMORY = "introduction_to_armory";
+const EFFECT_TRANSCRIBE_OF_THE_WICKED = "transcribe_of_the_wicked";
 
-  TARGET_ALL_ENEMY_UNITS: "all_enemy_units",
-  TARGET_FRIENDLY_UNITS_WITH_TRAIT: "friendly_units_with_trait",
-  TARGET_FRIENDLY_UNIT_WITH_TRAIT: "friendly_unit_with_trait",
-  TARGET_RANDOM_HAND_UNIT_WITH_TRAIT: "random_hand_unit_with_trait",
-  TARGET_FRIENDLY_DAMAGE_SPELLS: "friendly_damage_spells",
-  TARGET_FRIENDLY_SPELLS_IN_HAND: "friendly_spells_in_hand",
-  TARGET_FRIENDLY_CARDS_IN_HAND_WITH_TRAIT: "friendly_cards_in_hand_with_trait"
+const TARGET_NONE = "none";
+const TARGET_FRIENDLY_PLAYER = "friendly_player";
+const TARGET_ENEMY_PLAYER = "enemy_player";
+const TARGET_ANY_ENEMY = "any_enemy";
+const TARGET_ANY_FRIENDLY = "any_friendly";
+const TARGET_ANY = "any";
+const TARGET_ENEMY_UNIT = "enemy_unit";
+const TARGET_FRIENDLY_UNIT = "friendly_unit";
+const TARGET_ANY_UNIT = "any_unit";
+const TARGET_ANY_PLAYER = "any_player";
+const TARGET_HAND_SCHOLAR = "NONE";
+
+const ACTION_NONE = "none";
+const ACTION_SPELL = "spell";
+const ACTION_ABILITY = "ability";
+const ACTION_UNIT_ATTACK = "unit_attack";
+const ACTION_HAND_SELECTION = "hand_selection";
+
+const KEYWORD_TAUNT = "taunt";
+const KEYWORD_RUSH = "rush";
+const KEYWORD_HASTE = "haste";
+const KEYWORD_IMMOBILE = "immobile";
+const KEYWORD_UNTRICKABLE = "untrickable";
+const KEYWORD_INVINCIBLE = "invincible";
+const KEYWORD_RICOCHET = "ricochet";
+const KEYWORD_DEADLY = "deadly";
+
+const TRIGGER_AURA = "aura";
+const TRIGGER_BATTLECRY = "battlecry";
+const TRIGGER_TURN_START = "turn_start";
+const TRIGGER_TURN_END = "turn_end";
+const TRIGGER_ON_UNIT_PLAYED = "on_unit_played";
+const TRIGGER_ON_SPELL_PLAYED = "on_spell_played";
+const TRIGGER_WHEN_KILLS = "when_kills";
+const TRIGGER_WHEN_DESTROYED = "when_destroyed";
+const TRIGGER_WHEN_ATTACKED = "when_attacked";
+const TRIGGER_ON_DESTROY_TARGET = "on_destroy_target";
+const TRIGGER_ON_ALLY_UNIT_ATTACK = "on_ally_unit_attack";
+const TRIGGER_ON_ALLY_UNIT_DAMAGED = "on_ally_unit_damaged";
+const TRIGGER_SPELL_EFFECT = "spell_effect";
+
+const ABILITY_EFFECT_DAMAGE = "damage";
+const ABILITY_EFFECT_DRAW = "draw";
+const ABILITY_EFFECT_BUFF_SELF = "buff_self";
+const ABILITY_EFFECT_BUFF_TRAIT = "buff_trait";
+const ABILITY_EFFECT_BUFF_ATTACKER = "buff_attacker";
+const ABILITY_EFFECT_BUFF_RANDOM_HAND_TRAIT = "buff_random_hand_trait";
+const ABILITY_EFFECT_GRANT_KEYWORDS_TO_TRAIT = "grant_keywords_to_trait";
+const ABILITY_EFFECT_SPELL_DAMAGE_BONUS = "spell_damage_bonus";
+const ABILITY_EFFECT_REDUCE_HAND_SPELL_COST = "reduce_hand_spell_cost";
+const ABILITY_EFFECT_MODIFY_HAND_COST_BY_TRAIT = "modify_hand_cost_by_trait";
+const ABILITY_EFFECT_DRAW_RANDOM_SPELL_FROM_DECK = "draw_random_spell_from_deck";
+const ABILITY_EFFECT_BUFF_OTHER_FRIENDLY_TRAIT_UNITS = "buff_other_friendly_trait_units";
+const ABILITY_EFFECT_DAMAGE_RANDOM_ENEMY_UNIT_OR_FACE = "damage_random_enemy_unit_or_face";
+const ABILITY_EFFECT_SUMMON_CARDS = "summon_cards";
+const ABILITY_EFFECT_DESTROY_LOWEST_HEALTH_ENEMY_UNIT = "destroy_lowest_health_enemy_unit";
+const ABILITY_EFFECT_DESTROY_FRIENDLY_UNIT_GAIN_STATS = "destroy_friendly_unit_gain_stats";
+const ABILITY_EFFECT_DAMAGE_ENEMY_LEADER_ON_ALLY_ATTACK = "damage_enemy_leader_on_ally_attack";
+const ABILITY_EFFECT_REMOVE_IMMOBILE_SET_ATTACK_FOR_TRAIT = "remove_immobile_set_attack_for_trait";
+const ABILITY_EFFECT_RETURN_RANDOM_HAND_TRAIT_CARD_THEN_DAMAGE_ALL_ENEMY_UNITS = "return_random_hand_trait_card_then_damage_all_enemy_units";
+const ABILITY_EFFECT_DESTROY_ENEMY_UNIT_AND_HEAL_LEADER = "destroy_enemy_unit_and_heal_leader";
+const ABILITY_EFFECT_GAIN_ATTACK_FROM_ALLIED_TRAIT_ATTACK_TOTAL = "gain_attack_from_allied_trait_attack_total";
+const ABILITY_EFFECT_DAMAGE_PLAYED_UNIT = "damage_played_unit";
+const ABILITY_EFFECT_HEAL_DAMAGED_ALLY_GADGET_AND_DAMAGE_ENEMY_LEADER = "heal_damaged_ally_gadget_and_damage_enemy_leader";
+const ABILITY_EFFECT_BURN_SPELL_FROM_HAND_THEN_BUFF_SELF = "burn_spell_from_hand_then_buff_self";
+const ABILITY_EFFECT_ADD_COPIES_TO_DECK = "add_copies_to_deck";
+const ABILITY_EFFECT_LOSE_STATS_FOR_OTHER_ALLY_UNITS = "lose_stats_for_other_ally_units";
+const ABILITY_EFFECT_REMOVE_KEYWORDS_FROM_PLAYED_UNIT = "remove_keywords_from_played_unit";
+const ABILITY_EFFECT_DRAW_RANDOM_TRAIT_UNIT_FROM_DECK = "draw_random_trait_unit_from_deck";
+const ABILITY_EFFECT_GAIN_MANA = "gain_mana";
+const ABILITY_EFFECT_COPY_SELF_TO_BOARD = "copy_self_to_board";
+const ABILITY_EFFECT_DRAW_CARD_THAT_COSTS_MORE = "draw_card_that_costs_more";
+const ABILITY_EFFECT_ADD_CARD_TO_HAND = "add_card_to_hand";
+const ABILITY_EFFECT_LOOK_TOP_DECK_KEEP_OR_BOTTOM = "look_top_deck_keep_or_bottom";
+const ABILITY_EFFECT_GAIN_TEMPORARY_KEYWORD = "gain_temporary_keyword";
+const ABILITY_EFFECT_ADD_CARD_TO_HAND_IF_TRAIT_PLAYED_COUNT = "add_card_to_hand_if_trait_played_count";
+const ABILITY_EFFECT_SUMMON_THREE_KEYWORD_COPIES = "summon_three_keyword_copies";
+const ABILITY_EFFECT_DESTROY_ALL_OTHER_UNITS_AND_FULL_HEAL_LEADER = "destroy_all_other_units_and_full_heal_leader";
+const ABILITY_EFFECT_REMOVE_KEYWORD_THEN_BUFF_SELF = "remove_keyword_then_buff_self";
+const ABILITY_EFFECT_DEBUFF_ATTACKER = "debuff_attacker";
+
+const ABILITY_TARGET_ANY = "any";
+const ABILITY_TARGET_ANY_ENEMY = "any_enemy";
+const ABILITY_TARGET_ANY_FRIENDLY = "any_friendly";
+const ABILITY_TARGET_ENEMY_PLAYER = "enemy_player";
+const ABILITY_TARGET_FRIENDLY_PLAYER = "friendly_player";
+const ABILITY_TARGET_ENEMY_UNIT = "enemy_unit";
+const ABILITY_TARGET_FRIENDLY_UNIT = "friendly_unit";
+const ABILITY_TARGET_ANY_UNIT = "any_unit";
+const ABILITY_TARGET_ANY_PLAYER = "any_player";
+const ABILITY_TARGET_ALL_ENEMY_UNITS = "all_enemy_units";
+const ABILITY_TARGET_FRIENDLY_UNITS_WITH_TRAIT = "friendly_units_with_trait";
+const ABILITY_TARGET_RANDOM_HAND_UNIT_WITH_TRAIT = "random_hand_unit_with_trait";
+const ABILITY_TARGET_FRIENDLY_DAMAGE_SPELLS = "friendly_damage_spells";
+const ABILITY_TARGET_FRIENDLY_SPELLS_IN_HAND = "friendly_spells_in_hand";
+const ABILITY_TARGET_FRIENDLY_CARDS_IN_HAND_WITH_TRAIT = "friendly_cards_in_hand_with_trait";
+
+const ABILITY_CONDITION_TARGET_WAS_FRIENDLY = "target_was_friendly";
+
+module.exports = {
+  STARTING_HP,
+  STARTING_HAND_SIZE,
+  MAX_HAND_SIZE,
+  MAX_BOARD_SIZE,
+  MAX_MANA,
+  MANA_GAIN_PER_TURN,
+  TURN_TIME_LIMIT_SECONDS,
+
+  SEAT_A,
+  SEAT_B,
+  OWNER_PLAYER1,
+  OWNER_PLAYER2,
+
+  CARD_TYPE_SPELL,
+  CARD_TYPE_UNIT,
+  CARD_SIDE_HUMAN,
+  CARD_SIDE_GOD,
+  CARD_SIDE_NEUTRAL,
+
+  EFFECT_DAMAGE,
+  EFFECT_HEAL,
+  EFFECT_DRAW,
+  EFFECT_UNIT,
+  EFFECT_NONE,
+  EFFECT_BUFF_DECK_TRAIT,
+  EFFECT_ADD_KEYWORD,
+  EFFECT_HEAL_ALL_ALLIES_GAIN_MAX_HP,
+  EFFECT_DESTROY_UNIT,
+  EFFECT_REDUCE_ENEMY_MAX_HP_THEN_ADD_COPIES,
+  EFFECT_ADD_ZERO_COST_COPIES_OF_LAST_SPELL,
+  EFFECT_DRAW_RANDOM_TRAIT_FROM_DECK_INCREASE_COST,
+  EFFECT_HAP_HAZARD,
+  EFFECT_DAMAGE_BY_BOARD_TRAIT_COUNT,
+  EFFECT_ADD_KEYWORDS_TO_UNIT,
+  EFFECT_RESURRECT_TRAIT_UNITS_FROM_GRAVEYARD,
+  EFFECT_TEMPORARY_IMMOBILE_ALL_ENEMY_UNITS,
+  EFFECT_DESTROY_FRIENDLY_TRAIT_UNIT_COPY_TO_HAND_BUFF,
+  EFFECT_RETURN_RANDOM_HAND_UNIT_DRAW_ANOTHER_TRAIT_UNIT,
+  EFFECT_MASTERWORK_OF_ART,
+  EFFECT_RUNIC_TUNING,
+  EFFECT_LAMENTATION_OF_LIFE,
+  EFFECT_INCANTATION_OF_MINSTREL,
+  EFFECT_RIME_OF_THE_ANCIENT_MARINER,
+  EFFECT_ENCOMPASSED_COMPASS,
+  EFFECT_LIGHTNING_CEREMONY,
+  EFFECT_SCAVENGE_COMMAND,
+  EFFECT_DUEL_ON_SEA,
+  EFFECT_STORM_AND_TIDES,
+  EFFECT_CALL_OF_OMEN,
+  EFFECT_BUFF_ALL_ALLY_UNITS,
+  EFFECT_POETRY_OF_RESILIENCE,
+  EFFECT_CONVIVIAL_HUMMING,
+
+  EFFECT_NOBLES_OBLIGE,
+  EFFECT_ECONOMICS_OVERFLOW,
+  EFFECT_HUMBLE_LIBRARIAN,
+  EFFECT_TARNISHED_BOOKSHELF,
+  EFFECT_SCRIBE_OF_HISTORY,
+  EFFECT_FORBIDDEN_BOOK,
+  EFFECT_BLIND_RESEARCHER,
+  EFFECT_ALL_KNOWING_ARCHIVIST,
+  EFFECT_MONOCHRO_BLUEPRINT,
+  EFFECT_BOOK_OF_RUSHWATER,
+  EFFECT_INTRODUCTION_TO_ARMORY,
+  EFFECT_TRANSCRIBE_OF_THE_WICKED,
+
+  TARGET_NONE,
+  TARGET_FRIENDLY_PLAYER,
+  TARGET_ENEMY_PLAYER,
+  TARGET_ANY_ENEMY,
+  TARGET_ANY_FRIENDLY,
+  TARGET_ANY,
+  TARGET_ENEMY_UNIT,
+  TARGET_FRIENDLY_UNIT,
+  TARGET_ANY_UNIT,
+  TARGET_ANY_PLAYER,
+  TARGET_HAND_SCHOLAR,
+
+  ACTION_NONE,
+  ACTION_SPELL,
+  ACTION_ABILITY,
+  ACTION_UNIT_ATTACK,
+  ACTION_HAND_SELECTION,
+
+  KEYWORD_TAUNT,
+  KEYWORD_RUSH,
+  KEYWORD_HASTE,
+  KEYWORD_IMMOBILE,
+  KEYWORD_UNTRICKABLE,
+  KEYWORD_INVINCIBLE,
+  KEYWORD_RICOCHET,
+  KEYWORD_DEADLY,
+
+  TRIGGER_AURA,
+  TRIGGER_BATTLECRY,
+  TRIGGER_TURN_START,
+  TRIGGER_TURN_END,
+  TRIGGER_ON_UNIT_PLAYED,
+  TRIGGER_ON_SPELL_PLAYED,
+  TRIGGER_WHEN_KILLS,
+  TRIGGER_WHEN_DESTROYED,
+  TRIGGER_WHEN_ATTACKED,
+  TRIGGER_ON_DESTROY_TARGET,
+  TRIGGER_ON_ALLY_UNIT_ATTACK,
+  TRIGGER_ON_ALLY_UNIT_DAMAGED,
+  TRIGGER_SPELL_EFFECT,
+
+  ABILITY_EFFECT_DAMAGE,
+  ABILITY_EFFECT_DRAW,
+  ABILITY_EFFECT_BUFF_SELF,
+  ABILITY_EFFECT_BUFF_TRAIT,
+  ABILITY_EFFECT_BUFF_ATTACKER,
+  ABILITY_EFFECT_BUFF_RANDOM_HAND_TRAIT,
+  ABILITY_EFFECT_GRANT_KEYWORDS_TO_TRAIT,
+  ABILITY_EFFECT_SPELL_DAMAGE_BONUS,
+  ABILITY_EFFECT_REDUCE_HAND_SPELL_COST,
+  ABILITY_EFFECT_MODIFY_HAND_COST_BY_TRAIT,
+  ABILITY_EFFECT_DRAW_RANDOM_SPELL_FROM_DECK,
+  ABILITY_EFFECT_BUFF_OTHER_FRIENDLY_TRAIT_UNITS,
+  ABILITY_EFFECT_DAMAGE_RANDOM_ENEMY_UNIT_OR_FACE,
+  ABILITY_EFFECT_SUMMON_CARDS,
+  ABILITY_EFFECT_DESTROY_LOWEST_HEALTH_ENEMY_UNIT,
+  ABILITY_EFFECT_DESTROY_FRIENDLY_UNIT_GAIN_STATS,
+  ABILITY_EFFECT_DAMAGE_ENEMY_LEADER_ON_ALLY_ATTACK,
+  ABILITY_EFFECT_REMOVE_IMMOBILE_SET_ATTACK_FOR_TRAIT,
+  ABILITY_EFFECT_RETURN_RANDOM_HAND_TRAIT_CARD_THEN_DAMAGE_ALL_ENEMY_UNITS,
+  ABILITY_EFFECT_DESTROY_ENEMY_UNIT_AND_HEAL_LEADER,
+  ABILITY_EFFECT_GAIN_ATTACK_FROM_ALLIED_TRAIT_ATTACK_TOTAL,
+  ABILITY_EFFECT_DAMAGE_PLAYED_UNIT,
+  ABILITY_EFFECT_HEAL_DAMAGED_ALLY_GADGET_AND_DAMAGE_ENEMY_LEADER,
+  ABILITY_EFFECT_BURN_SPELL_FROM_HAND_THEN_BUFF_SELF,
+  ABILITY_EFFECT_ADD_COPIES_TO_DECK,
+  ABILITY_EFFECT_LOSE_STATS_FOR_OTHER_ALLY_UNITS,
+  ABILITY_EFFECT_REMOVE_KEYWORDS_FROM_PLAYED_UNIT,
+  ABILITY_EFFECT_DRAW_RANDOM_TRAIT_UNIT_FROM_DECK,
+  ABILITY_EFFECT_GAIN_MANA,
+  ABILITY_EFFECT_COPY_SELF_TO_BOARD,
+  ABILITY_EFFECT_DRAW_CARD_THAT_COSTS_MORE,
+  ABILITY_EFFECT_ADD_CARD_TO_HAND,
+  ABILITY_EFFECT_LOOK_TOP_DECK_KEEP_OR_BOTTOM,
+  ABILITY_EFFECT_GAIN_TEMPORARY_KEYWORD,
+  ABILITY_EFFECT_ADD_CARD_TO_HAND_IF_TRAIT_PLAYED_COUNT,
+  ABILITY_EFFECT_SUMMON_THREE_KEYWORD_COPIES,
+  ABILITY_EFFECT_DESTROY_ALL_OTHER_UNITS_AND_FULL_HEAL_LEADER,
+  ABILITY_EFFECT_REMOVE_KEYWORD_THEN_BUFF_SELF,
+  ABILITY_EFFECT_DEBUFF_ATTACKER,
+
+  ABILITY_TARGET_ANY,
+  ABILITY_TARGET_ANY_ENEMY,
+  ABILITY_TARGET_ANY_FRIENDLY,
+  ABILITY_TARGET_ENEMY_PLAYER,
+  ABILITY_TARGET_FRIENDLY_PLAYER,
+  ABILITY_TARGET_ENEMY_UNIT,
+  ABILITY_TARGET_FRIENDLY_UNIT,
+  ABILITY_TARGET_ANY_UNIT,
+  ABILITY_TARGET_ANY_PLAYER,
+  ABILITY_TARGET_ALL_ENEMY_UNITS,
+  ABILITY_TARGET_FRIENDLY_UNITS_WITH_TRAIT,
+  ABILITY_TARGET_RANDOM_HAND_UNIT_WITH_TRAIT,
+  ABILITY_TARGET_FRIENDLY_DAMAGE_SPELLS,
+  ABILITY_TARGET_FRIENDLY_SPELLS_IN_HAND,
+  ABILITY_TARGET_FRIENDLY_CARDS_IN_HAND_WITH_TRAIT,
+
+  ABILITY_CONDITION_TARGET_WAS_FRIENDLY
 };
-
-module.exports = C;
