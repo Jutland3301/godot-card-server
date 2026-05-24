@@ -435,9 +435,10 @@ async function handleOpenPack(req, res) {
   const packType = String(body.pack_type || "test").trim();
   const packSize = Number(body.pack_size || 5);
 
-  const safePackSize = Number.isInteger(packSize) && packSize > 0 && packSize <= 20
-    ? packSize
-    : 5;
+  const safePackSize =
+    Number.isInteger(packSize) && packSize > 0 && packSize <= 20
+      ? packSize
+      : 5;
 
   try {
     const cardResult = await pool.query(
@@ -575,7 +576,6 @@ async function handleGetDecks(req, res) {
   }
 }
 
-
 async function handleSaveDeck(req, res) {
   if (!requireDb(res)) return;
 
@@ -664,7 +664,7 @@ async function handleSaveDeck(req, res) {
       const cardId = String(item.card_id || "").trim();
       const count = Number(item.count || 0);
 
-      if (cardId == "" || !Number.isInteger(count) || count <= 0) {
+      if (cardId === "" || !Number.isInteger(count) || count <= 0) {
         continue;
       }
 
@@ -777,7 +777,16 @@ const server = http.createServer(async (req, res) => {
     await handleOpenPack(req, res);
     return;
   }
-  
+
+  if (req.method === "GET" && url.pathname === "/decks") {
+    await handleGetDecks(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/save_deck") {
+    await handleSaveDeck(req, res);
+    return;
+  }
 
   sendJson(res, 404, {
     ok: false,
@@ -899,11 +908,15 @@ wss.on("connection", (ws) => {
         player_count: room.size
       });
 
-      broadcastToRoom(roomId, {
-        type: "peer_joined",
-        client_id: client.id,
-        player_count: room.size
-      }, ws);
+      broadcastToRoom(
+        roomId,
+        {
+          type: "peer_joined",
+          client_id: client.id,
+          player_count: room.size
+        },
+        ws
+      );
 
       return;
     }
@@ -917,11 +930,15 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      broadcastToRoom(client.roomId, {
-        type: "relay",
-        from_client_id: client.id,
-        payload: msg.payload || {}
-      }, ws);
+      broadcastToRoom(
+        client.roomId,
+        {
+          type: "relay",
+          from_client_id: client.id,
+          payload: msg.payload || {}
+        },
+        ws
+      );
 
       return;
     }
