@@ -2,6 +2,11 @@ const http = require("http");
 const { WebSocketServer } = require("ws");
 const { Pool } = require("pg");
 const { makeCardFromId, getAvailableCardIds } = require("./cards_database");
+const {
+  handleBattleAction,
+  normalizeStateRuntime,
+  startTurn
+} = require("./battle_engine");
 
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || "";
