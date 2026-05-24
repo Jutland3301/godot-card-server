@@ -12,6 +12,252 @@ const MANA_GAIN_PER_TURN = 1;
 const MAX_MANA = 10;
 const TURN_TIME_LIMIT_SECONDS = 45.0;
 const MAX_HAND_SIZE = 7;
+const CARD_DATABASE = {
+  absolute_loyalty: {
+    name: "Absolute Loyalty",
+    type: "spell",
+    cost: 6,
+    power: 0,
+    effect_id: "buff_deck_trait",
+    target_type: "none",
+    description: "Give all Soldier units in your deck +X/+X. X is the number of Soldier units on your field.",
+    attack: 0,
+    hp: 0,
+    armor: 0,
+    keywords: [],
+    tags: ["basic", "buff"],
+    traits: [],
+    side: "human",
+    abilities: [
+      {
+        effect: "buff_deck_trait",
+        trait: "soldier",
+        attack: 1,
+        hp: 1
+      }
+    ]
+  },
+
+  angelic_singer: {
+    name: "Angelic Singer",
+    type: "unit",
+    cost: 7,
+    power: 0,
+    effect_id: "none",
+    target_type: "none",
+    description: "Music. Untrickable. Turn End and Turn Start: All allied Music units gain +1/+1.",
+    attack: 4,
+    hp: 4,
+    armor: 0,
+    keywords: ["untrickable"],
+    tags: ["basic", "music", "engine", "buffer"],
+    traits: ["music"],
+    side: "human",
+    abilities: [
+      {
+        trigger: "turn_end",
+        effect: "buff_trait",
+        target: "friendly_units_with_trait",
+        trait: "music",
+        attack: 1,
+        hp: 1
+      },
+      {
+        trigger: "turn_start",
+        effect: "buff_trait",
+        target: "friendly_units_with_trait",
+        trait: "music",
+        attack: 1,
+        hp: 1
+      }
+    ]
+  },
+
+  archery_lessons: {
+    name: "Archery Lessons",
+    type: "spell",
+    cost: 2,
+    power: 0,
+    effect_id: "add_keyword",
+    target_type: "any_friendly",
+    description: "Give a friendly Soldier unit Ricochet.",
+    attack: 0,
+    hp: 0,
+    armor: 0,
+    keywords: [],
+    tags: ["basic", "training"],
+    traits: [],
+    side: "human",
+    abilities: [
+      {
+        effect: "add_keyword",
+        target: "friendly_unit_with_trait",
+        trait: "soldier",
+        keyword: "ricochet"
+      }
+    ]
+  },
+
+  armored_knight: {
+    name: "Armored Knight",
+    type: "unit",
+    cost: 3,
+    power: 0,
+    effect_id: "none",
+    target_type: "none",
+    description: "Armored 1",
+    attack: 3,
+    hp: 2,
+    armor: 1,
+    keywords: [],
+    tags: ["basic", "defender", "armored"],
+    traits: ["soldier"],
+    side: "human",
+    abilities: []
+  },
+
+  autocannon: {
+    name: "Autocannon",
+    type: "unit",
+    cost: 3,
+    power: 0,
+    effect_id: "none",
+    target_type: "none",
+    description: "Gadget. Immobile. When an ally unit attacks, deal 2 damage to the enemy leader.",
+    attack: 1,
+    hp: 4,
+    armor: 0,
+    keywords: ["immobile"],
+    tags: ["basic", "gadget", "engine"],
+    traits: ["gadget"],
+    side: "human",
+    abilities: [
+      {
+        trigger: "on_ally_unit_attack",
+        effect: "damage_enemy_leader_on_ally_attack",
+        amount: 2
+      }
+    ]
+  },
+
+  arrogant_apprentice: {
+    name: "Arrogant Apprentice",
+    type: "unit",
+    cost: 2,
+    power: 0,
+    effect_id: "none",
+    target_type: "none",
+    description: "Turn start: Draw a random spell from your deck.",
+    attack: 0,
+    hp: 4,
+    armor: 0,
+    keywords: [],
+    tags: ["basic", "draw", "engine", "mage"],
+    traits: ["mage"],
+    side: "god",
+    abilities: [
+      {
+        trigger: "turn_start",
+        effect: "draw_random_spell_from_deck",
+        amount: 1
+      }
+    ]
+  },
+
+  cauldron: {
+    name: "Cauldron",
+    type: "unit",
+    cost: 5,
+    power: 0,
+    effect_id: "none",
+    target_type: "none",
+    description: "Mage. Taunt. When you play a spell: This gains +1/+1.",
+    attack: 3,
+    hp: 6,
+    armor: 0,
+    keywords: ["taunt"],
+    tags: ["basic", "mage", "engine", "taunt"],
+    traits: ["mage"],
+    side: "god",
+    abilities: [
+      {
+        trigger: "on_spell_played",
+        effect: "buff_self",
+        attack: 1,
+        hp: 1,
+        only_friendly: true
+      }
+    ]
+  },
+
+  circus_of_illusion: {
+    name: "Circus of Illusion",
+    type: "spell",
+    cost: 6,
+    power: 2,
+    effect_id: "resurrect_trait_units_from_graveyard",
+    target_type: "none",
+    description: "Phantom. Resurrect 2 Phantom units from your graveyard. They gain Haste.",
+    attack: 0,
+    hp: 0,
+    armor: 0,
+    keywords: [],
+    tags: ["basic", "phantom", "spell", "resurrect"],
+    traits: ["phantom"],
+    side: "god",
+    abilities: [
+      {
+        effect: "resurrect_trait_units_from_graveyard",
+        trait: "phantom",
+        amount: 2,
+        keywords: ["haste"]
+      }
+    ]
+  },
+
+  dreamseeking_pallet: {
+    name: "Dreamseeking Pallet",
+    type: "spell",
+    cost: 1,
+    power: 0,
+    effect_id: "damage_by_board_trait_count",
+    target_type: "any_unit",
+    description: "Deal X damage to a unit. X is the number of different traits on the board.",
+    attack: 0,
+    hp: 0,
+    armor: 0,
+    keywords: [],
+    tags: ["basic", "damage", "trait"],
+    traits: [],
+    side: "god",
+    abilities: []
+  },
+
+  eigenspirits: {
+    name: "Eigenspirits",
+    type: "unit",
+    cost: 10,
+    power: 0,
+    effect_id: "none",
+    target_type: "none",
+    description: "Haste. When destroyed: Summon a copy of this card with +2/+2.",
+    attack: 1,
+    hp: 1,
+    armor: 0,
+    keywords: ["haste"],
+    tags: ["basic", "death", "scaling"],
+    traits: [],
+    side: "god",
+    abilities: [
+      {
+        trigger: "when_destroyed",
+        effect: "copy_self_to_board",
+        attack: 2,
+        hp: 2
+      }
+    ]
+  }
+};
 
 const pool = DATABASE_URL
   ? new Pool({
@@ -1016,43 +1262,88 @@ function shuffleArray(array) {
 
 function makeInitialCardState(cardId) {
   const cleanCardId = String(cardId || "").trim();
+  const data = CARD_DATABASE[cleanCardId] || null;
+
+  if (!data) {
+    console.log("[CARD DB] Unknown card_id:", cleanCardId);
+
+    return {
+      card_id: cleanCardId,
+      card_name: cleanCardId,
+      display_name: cleanCardId,
+      cost: 0,
+      power: 0,
+      card_type: "unit",
+      target_type: "none",
+      effect_id: "none",
+      trigger_id: "none",
+
+      attack: 0,
+      hp: 1,
+      max_hp: 1,
+      armor: 0,
+      base_attack: 0,
+      base_hp: 1,
+
+      side: "neutral",
+      traits: [],
+      keywords: [],
+      tags: [],
+      abilities: [],
+
+      can_attack: false,
+      exhausted: true,
+      summoned_this_turn: false,
+      has_attacked_this_turn: false,
+      attacks_this_turn: 0,
+      max_attacks_per_turn: 1,
+
+      temporary_keywords: {},
+      once_per_turn_flags: {}
+    };
+  }
+
+  const attack = Number(data.attack || 0);
+  const hp = Number(data.hp || 0);
 
   return {
     card_id: cleanCardId,
-    card_name: cleanCardId,
-    display_name: cleanCardId,
-    cost: 0,
-    power: 0,
-    card_type: "unit",
-    target_type: "none",
-    effect_id: "",
-    trigger_id: "none",
+    card_name: String(data.name || cleanCardId),
+    display_name: String(data.name || cleanCardId),
+    cost: Number(data.cost || 0),
+    power: Number(data.power || 0),
+    card_type: String(data.type || "spell"),
+    target_type: String(data.target_type || "none"),
+    effect_id: String(data.effect_id || "none"),
+    trigger_id: String(data.trigger_id || "none"),
+    description: String(data.description || ""),
 
-    attack: 0,
-    hp: 1,
-    max_hp: 1,
-    armor: 0,
-    base_attack: 0,
-    base_hp: 1,
+    attack,
+    hp,
+    max_hp: hp,
+    armor: Number(data.armor || 0),
+    base_attack: attack,
+    base_hp: hp,
 
-    side: "neutral",
-    traits: [],
-    keywords: [],
-    tags: [],
-    abilities: [],
+    side: String(data.side || "human"),
+    traits: Array.isArray(data.traits) ? data.traits.map(String) : [],
+    keywords: Array.isArray(data.keywords) ? data.keywords.map(String) : [],
+    tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
+    abilities: Array.isArray(data.abilities)
+      ? JSON.parse(JSON.stringify(data.abilities))
+      : [],
 
     can_attack: false,
-    exhausted: false,
+    exhausted: true,
     summoned_this_turn: false,
     has_attacked_this_turn: false,
     attacks_this_turn: 0,
-    max_attacks_per_turn: 1,
+    max_attacks_per_turn: Number(data.max_attacks_per_turn || 1),
 
     temporary_keywords: {},
     once_per_turn_flags: {}
   };
 }
-
 function makeInitialPlayerState(ownerId, deckData) {
   const cardIds = getCardIdsFromDeckData(deckData);
   const deck = shuffleArray(cardIds.map((cardId) => makeInitialCardState(cardId)));
@@ -1331,6 +1622,169 @@ function endServerTurn(match, seatId) {
   };
 }
 
+function getPlayerForOwnerId(state, ownerId) {
+  if (!state) {
+    return null;
+  }
+
+  if (ownerId === "player1") {
+    return state.player1 || null;
+  }
+
+  if (ownerId === "player2") {
+    return state.player2 || null;
+  }
+
+  return null;
+}
+
+
+function getOpponentOwnerId(ownerId) {
+  return ownerId === "player1" ? "player2" : "player1";
+}
+
+
+function applySummonState(card) {
+  if (!card) {
+    return;
+  }
+
+  card.summoned_this_turn = true;
+  card.has_attacked_this_turn = false;
+  card.attacks_this_turn = 0;
+
+  const keywords = Array.isArray(card.keywords) ? card.keywords : [];
+
+  if (keywords.includes("haste")) {
+    card.can_attack = true;
+    card.exhausted = false;
+    return;
+  }
+
+  if (keywords.includes("rush")) {
+    card.can_attack = true;
+    card.exhausted = false;
+    return;
+  }
+
+  card.can_attack = false;
+  card.exhausted = true;
+}
+
+
+function playCardFromHand(match, seatId, handIndex) {
+  const state = match.state || {};
+  const ownerId = getOwnerIdForSeat(seatId);
+  const player = getPlayerForOwnerId(state, ownerId);
+
+  if (!ownerId || !player) {
+    return {
+      ok: false,
+      message: "Invalid player."
+    };
+  }
+
+  if (state.game_over) {
+    return {
+      ok: false,
+      message: "Game is already over."
+    };
+  }
+
+  if (state.current_player_id !== ownerId) {
+    return {
+      ok: false,
+      message: "Not your turn."
+    };
+  }
+
+  if (!Array.isArray(player.hand)) {
+    player.hand = [];
+  }
+
+  if (!Array.isArray(player.board)) {
+    player.board = [];
+  }
+
+  if (!Array.isArray(player.graveyard)) {
+    player.graveyard = [];
+  }
+
+  if (handIndex < 0 || handIndex >= player.hand.length) {
+    return {
+      ok: false,
+      message: "Invalid hand index."
+    };
+  }
+
+  const card = player.hand[handIndex];
+
+  if (!card) {
+    return {
+      ok: false,
+      message: "Selected card is missing."
+    };
+  }
+
+  const cost = Number(card.cost || 0);
+
+  if (Number(player.mana || 0) < cost) {
+    return {
+      ok: false,
+      message: "Not enough mana to play " + String(card.card_name || card.card_id || "card") + "."
+    };
+  }
+
+  if (card.card_type === "unit" && player.board.length >= 5) {
+    return {
+      ok: false,
+      message: "Board is full."
+    };
+  }
+
+  const targetType = String(card.target_type || "none");
+
+  if (targetType !== "none") {
+    return {
+      ok: false,
+      message: "Targeted cards are not implemented on Node yet: " + String(card.card_name || card.card_id)
+    };
+  }
+
+  player.mana = Number(player.mana || 0) - cost;
+  player.hand.splice(handIndex, 1);
+
+  if (card.card_type === "unit") {
+    applySummonState(card);
+    player.board.push(card);
+
+    state.status_message = player.name + " summoned " + String(card.card_name || card.card_id) + ".";
+    state.battle_log_messages.push(state.status_message);
+
+    return {
+      ok: true,
+      state
+    };
+  }
+
+  if (card.card_type === "spell") {
+    player.graveyard.push(card);
+
+    state.status_message = player.name + " cast " + String(card.card_name || card.card_id) + ".";
+    state.battle_log_messages.push(state.status_message);
+
+    return {
+      ok: true,
+      state
+    };
+  }
+
+  return {
+    ok: false,
+    message: "Unknown card type: " + String(card.card_type || "")
+  };
+}
+
 function handleServerBattleAction(match, seatId, action, payload) {
   if (!match) {
     return {
@@ -1347,6 +1801,11 @@ function handleServerBattleAction(match, seatId, action, payload) {
   }
 
   switch (action) {
+    case "hand_card_clicked": {
+      const handIndex = Number(payload.hand_index ?? -1);
+      return playCardFromHand(match, seatId, handIndex);
+    }
+
     case "end_turn":
       return endServerTurn(match, seatId);
 
