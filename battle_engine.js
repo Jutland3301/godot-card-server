@@ -403,8 +403,52 @@ function endTurn(state, seatId) {
   return true;
 }
 
+function normalizeOwnerToSeat(state, rawOwner) {
+  const value = String(rawOwner || "");
+
+  if (value === "A" || value === "B") {
+    return value;
+  }
+
+  if (value === "player1") {
+    return "A";
+  }
+
+  if (value === "player2") {
+    return "B";
+  }
+
+  if (state && state.owner_to_seat_id && state.owner_to_seat_id[value]) {
+    return state.owner_to_seat_id[value];
+  }
+
+  return value;
+}
+
+function normalizeSeatToOwner(state, rawSeat) {
+  const value = String(rawSeat || "");
+
+  if (value === "player1" || value === "player2") {
+    return value;
+  }
+
+  if (value === "A") {
+    return "player1";
+  }
+
+  if (value === "B") {
+    return "player2";
+  }
+
+  if (state && state.seat_to_owner_id && state.seat_to_owner_id[value]) {
+    return state.seat_to_owner_id[value];
+  }
+
+  return value;
+}
+
 function getTargetFromPayload(state, payload) {
-  const target = payload.target || {};
+  const target = payload.target && typeof payload.target === "object" ? payload.target : {};
 
   const targetType =
     payload.target_type ||
@@ -413,35 +457,55 @@ function getTargetFromPayload(state, payload) {
     target.targetType ||
     null;
 
-  const ownerSeat =
+  const rawOwner =
     payload.owner_seat ||
     payload.target_owner ||
     payload.board_owner ||
+    payload.owner_id ||
+    payload.owner ||
+    payload.player_owner ||
+    payload.player_id ||
     target.owner_seat ||
     target.target_owner ||
     target.board_owner ||
+    target.owner_id ||
+    target.owner ||
+    target.player_owner ||
+    target.player_id ||
     null;
+
+  const ownerSeat = normalizeOwnerToSeat(state, rawOwner);
 
   const boardIndexRaw =
     payload.board_index ??
     payload.target_index ??
     payload.unit_index ??
+    payload.index ??
     target.board_index ??
     target.target_index ??
     target.unit_index ??
+    target.index ??
     null;
 
-  if (targetType === "enemy_player" || targetType === "friendly_player" || targetType === "player") {
+  if (
+    targetType === "enemy_player" ||
+    targetType === "friendly_player" ||
+    targetType === "player" ||
+    payload.is_leader === true ||
+    payload.target_is_leader === true ||
+    target.is_leader === true ||
+    target.target_is_leader === true
+  ) {
     return {
       type: "player",
       owner_seat: ownerSeat
     };
   }
 
-  if (ownerSeat != null && boardIndexRaw != null) {
+  if (ownerSeat && boardIndexRaw != null) {
     return {
       type: "unit",
-      owner_seat: String(ownerSeat),
+      owner_seat: ownerSeat,
       board_index: Number(boardIndexRaw)
     };
   }
@@ -1125,7 +1189,7 @@ function handleBattleAction(match, seatId, payload, deps = {}) {
     return { ok, state };
   }
 
-  if (action === "board_slot_clicked") {
+   if (action === "board_slot_clicked") {
     const target = getTargetFromPayload(state, payload);
 
     if (state.selected) {
@@ -1133,7 +1197,15 @@ function handleBattleAction(match, seatId, payload, deps = {}) {
       return { ok, state };
     }
 
-    const ownerSeat = payload.owner_seat || payload.board_owner || payload.target_owner || seatId;
+    const rawOwner =
+      payload.owner_seat ||
+      payload.board_owner ||
+      payload.target_owner ||
+      payload.owner_id ||
+      payload.owner ||
+      seatId;
+
+    const ownerSeat = normalizeOwnerToSeat(state, rawOwner);
     const boardIndex = payload.board_index ?? payload.unit_index ?? payload.index;
 
     if (String(ownerSeat) === String(seatId)) {
@@ -1142,14 +1214,23 @@ function handleBattleAction(match, seatId, payload, deps = {}) {
     }
 
     nowLog(state, `Reject board click: enemy unit clicked without selected action.`);
-    return { ok: false, state };
+    return { ok: false, state, reason: "enemy unit clicked without selected action" };
   }
 
-  if (action === "player_face_clicked") {
-    const ownerSeat = payload.owner_seat || payload.target_owner || payload.player_seat || otherSeat(seatId);
+    if (action === "player_face_clicked") {
+    const rawOwner =
+      payload.owner_seat ||
+      payload.target_owner ||
+      payload.player_seat ||
+      payload.owner_id ||
+      payload.owner ||
+      payload.player_owner ||
+      payload.player_id ||
+      otherSeat(seatId);
+
     const target = {
       type: "player",
-      owner_seat: String(ownerSeat)
+      owner_seat: normalizeOwnerToSeat(state, rawOwner)
     };
 
     if (state.selected) {
@@ -1158,12 +1239,8 @@ function handleBattleAction(match, seatId, payload, deps = {}) {
     }
 
     nowLog(state, `Reject face click: no selected action.`);
-    return { ok: false, state };
+    return { ok: false, state, reason: "no selected action" };
   }
-
-  nowLog(state, `Unknown battle action: ${action}`);
-  return { ok: false, state, reason: "unknown action" };
-}
 
 module.exports = {
   handleBattleAction,
@@ -1180,4 +1257,6 @@ module.exports = {
   resolveEffect,
   resolveTriggeredAbilities,
   resolveGlobalTrigger
+  normalizeOwnerToSeat,
+  normalizeSeatToOwner,
 };
