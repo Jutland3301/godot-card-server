@@ -820,6 +820,33 @@ function getSideFromDeckData(deckData) {
   return String(deckData.side || "").toLowerCase();
 }
 
+function destroyMatchesForClient(clientId, reason = "Client started a new queue.") {
+  const targetClientId = String(clientId || "");
+
+  if (targetClientId === "") {
+    return;
+  }
+
+  const matchIdsToDestroy = [];
+
+  for (const [matchId, match] of matches.entries()) {
+    if (!match || !match.seats) {
+      continue;
+    }
+
+    const aClientId = match.seats.A ? String(match.seats.A.client_id || "") : "";
+    const bClientId = match.seats.B ? String(match.seats.B.client_id || "") : "";
+
+    if (aClientId === targetClientId || bClientId === targetClientId) {
+      matchIdsToDestroy.push(matchId);
+    }
+  }
+
+  for (const matchId of matchIdsToDestroy) {
+    destroyMatch(matchId, reason);
+  }
+}
+
 function getCardIdsFromDeckData(deckData) {
   if (!deckData || typeof deckData !== "object") {
     return [];
