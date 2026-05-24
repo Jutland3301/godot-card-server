@@ -2,11 +2,7 @@ const http = require("http");
 const { WebSocketServer, WebSocket } = require("ws");
 const { Pool } = require("pg");
 const { makeCardFromId, getAvailableCardIds } = require("./cards_database");
-const {
-  handleBattleAction,
-  normalizeStateRuntime,
-  startTurn
-} = require("./battle_engine");
+const BattleEngine = require("./battle_engine");
 
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || "";
@@ -1415,10 +1411,6 @@ function makeInitialMatchState(match) {
   // startServerTurn後に current_player_id / timer / mana が確定するので同期。
   state.turn_seat = state.owner_to_seat_id[state.current_player_id] || "A";
 
-  // battle_engine.js 側の normalize は players.A/B 前提なので、
-  // ここでは state.players を作った後に呼ぶ。
-  normalizeStateRuntime(state);
-
   // normalizeStateRuntime が log を見るので、既存ログも合わせる。
   if (Array.isArray(state.battle_log_messages) && Array.isArray(state.log)) {
     for (const message of state.battle_log_messages) {
@@ -2150,6 +2142,18 @@ function syncBattleEngineStateToLegacyState(state) {
   return state;
 }
 
+function getPublicBattleState(match) {
+  if (!match || !match.state) {
+    return {};
+  }
+
+  if (BattleEngine && typeof BattleEngine.makePublicState === "function") {
+    return BattleEngine.makePublicState(match.state);
+  }
+
+  return match.state;
+}
+
 function broadcastMatchState(matchId, state) {
   const match = matches.get(matchId);
 
@@ -2157,17 +2161,29 @@ function broadcastMatchState(matchId, state) {
     return;
   }
 
-  match.state = state || {};
+  match.state = state || match.state || {};
+
+  const publicState = getPublicBattleState(match);
 
   const clientA = clients.get(match.seats.A.client_id);
   const clientB = clients.get(match.seats.B.client_id);
 
   if (clientA) {
-    safeSend(clientA.ws, { type: "match_state", match_id: matchId, seat_id: "A", state: match.state });
+    safeSend(clientA.ws, {
+      type: "match_state",
+      match_id: matchId,
+      seat_id: "A",
+      state: publicState
+    });
   }
 
   if (clientB) {
-    safeSend(clientB.ws, { type: "match_state", match_id: matchId, seat_id: "B", state: match.state });
+    safeSend(clientB.ws, {
+      type: "match_state",
+      match_id: matchId,
+      seat_id: "B",
+      state: publicState
+    });
   }
 }
 
@@ -2177,6 +2193,12 @@ function sendMatchFound(matchId, state) {
   if (!match) {
     return;
   }
+
+  if (state) {
+    match.state = state;
+  }
+
+  const publicState = getPublicBattleState(match);
 
   const clientA = clients.get(match.seats.A.client_id);
   const clientB = clients.get(match.seats.B.client_id);
@@ -2191,7 +2213,7 @@ function sendMatchFound(matchId, state) {
       seat_id: "A",
       side: sideA,
       opponent_side: sideB,
-      state: state || {}
+      state: publicState
     });
   }
 
@@ -2202,7 +2224,7 @@ function sendMatchFound(matchId, state) {
       seat_id: "B",
       side: sideB,
       opponent_side: sideA,
-      state: state || {}
+      state: publicState
     });
   }
 }
@@ -2335,7 +2357,7 @@ function handleClientMessage(client, message) {
         action
       };
 
-      const result = handleBattleAction(match, seatId, enginePayload, {
+      const result = BattleEngine.handleBattleAction(match, seatId, enginePayload, {
         makeCardFromId
       });
 
@@ -2344,7 +2366,9 @@ function handleClientMessage(client, message) {
         return;
       }
 
-      match.state = syncBattleEngineStateToLegacyState(result.state || match.state);
+      // handleBattleAction は match.state を直接更新する。
+      // result.state は public state の可能性があるので、authoritative state として保存しない。
+      match.state = syncBattleEngineStateToLegacyState(match.state);
       broadcastMatchState(matchId, match.state);
 
       if (match.state && match.state.game_over) {
