@@ -1,5 +1,5 @@
 const http = require("http");
-const { WebSocketServer } = require("ws");
+const { WebSocketServer, WebSocket } = require("ws");
 const { Pool } = require("pg");
 const { makeCardFromId, getAvailableCardIds } = require("./cards_database");
 const {
@@ -53,12 +53,17 @@ function sendJson(res, statusCode, payload) {
 }
 
 function safeSend(ws, message) {
-  if (!ws || ws.readyState !== ws.OPEN) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
     return false;
   }
 
-  ws.send(JSON.stringify(message));
-  return true;
+  try {
+    ws.send(JSON.stringify(message));
+    return true;
+  } catch (error) {
+    console.error("[WS SEND ERROR]", error && error.stack ? error.stack : error);
+    return false;
+  }
 }
 
 function safeParse(text) {
@@ -909,11 +914,11 @@ function tryMakeMatch() {
       continue;
     }
 
-    if (!clientA.ws || clientA.ws.readyState !== clientA.ws.OPEN) {
+    if (!clientA.ws || clientA.ws.readyState !== WebSocket.OPEN) {
       continue;
     }
-
-    if (!clientB.ws || clientB.ws.readyState !== clientB.ws.OPEN) {
+    
+    if (!clientB.ws || clientB.ws.readyState !== WebSocket.OPEN) {
       continue;
     }
 
