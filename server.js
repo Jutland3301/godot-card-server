@@ -2397,25 +2397,33 @@ function handleDisconnect(connection) {
       const match = matches.get(client.match_id);
 
       if (match) {
-        const otherSeatId = client.seat_id === "A" ? "B" : "A";
+        const seatId = client.seat_id;
+        const otherSeatId = seatId === "A" ? "B" : "A";
         const otherSeat = match.seats[otherSeatId];
+
+        if (seatId && match.seats[seatId]) {
+          match.seats[seatId].disconnected = true;
+          match.seats[seatId].disconnected_at = Date.now();
+        }
+
+        console.log(
+          "[MATCH] client disconnected but match kept temporarily",
+          match.match_id,
+          "seat=",
+          seatId
+        );
 
         if (otherSeat) {
           const otherClient = clients.get(otherSeat.client_id);
 
-          if (otherClient) {
+          if (otherClient && otherClient.ws) {
             safeSend(otherClient.ws, {
-              type: "opponent_left",
+              type: "opponent_connection_lost",
               match_id: match.match_id,
-              message: "Opponent left the match."
+              message: "Opponent connection was lost."
             });
-
-            otherClient.match_id = "";
-            otherClient.seat_id = "";
           }
         }
-
-        destroyMatch(match.match_id, "Client disconnected.");
       }
     }
 
@@ -2427,86 +2435,8 @@ function handleDisconnect(connection) {
     const host = connection;
     console.log("[HOST] disconnected", host.host_id);
     hosts.delete(host.host_id);
-  }
-}
-
-wss.on("connection", (ws, req) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const role = url.searchParams.get("role") || "client";
-
-  if (role === "host") {
-    const hostId = makeId("host", nextHostNumber++);
-
-    const host = {
-      role: "host",
-      ws,
-      host_id: hostId,
-      ready: false,
-      capacity: 1,
-      current_match_id: ""
-    };
-
-    hosts.set(hostId, host);
-
-    console.log("[HOST] connected but unused in Node authoritative mode", hostId);
-
-    safeSend(ws, {
-      type: "host_welcome",
-      host_id: hostId,
-      mode: "node_authoritative"
-    });
-
-    ws.on("message", (data) => {
-      const message = safeParse(data.toString());
-
-      if (!message) {
-        console.log("[HOST] invalid JSON from", hostId);
-        return;
-      }
-
-      handleHostMessage(host, message);
-    });
-
-    ws.on("close", () => handleDisconnect(host));
-    ws.on("error", (error) => console.log("[HOST] socket error", hostId, error.message));
-
     return;
   }
 
-  const clientId = makeId("client", nextClientNumber++);
-
-  const client = {
-    role: "client",
-    ws,
-    client_id: clientId,
-    user_id: "",
-    queued: false,
-    match_id: "",
-    seat_id: ""
-  };
-
-  clients.set(clientId, client);
-
-  console.log("[CLIENT] connected", clientId);
-
-  safeSend(ws, { type: "welcome", client_id: clientId });
-
-  ws.on("message", (data) => {
-    const message = safeParse(data.toString());
-
-    if (!message) {
-      console.log("[CLIENT] invalid JSON from", clientId);
-      sendError(ws, "Invalid JSON.");
-      return;
-    }
-
-    handleClientMessage(client, message);
-  });
-
-  ws.on("close", () => handleDisconnect(client));
-  ws.on("error", (error) => console.log("[CLIENT] socket error", clientId, error.message));
-});
-
-server.listen(PORT, () => {
-  console.log(`[SERVER] Node authoritative gateway + save API listening on port ${PORT}`);
-});
+  console.log("[WS] disconnected unknown connection");
+}
