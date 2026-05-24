@@ -1356,6 +1356,12 @@ function makeInitialMatchState(match) {
 
     turn_number: 1,
     current_player_id: "player1",
+
+    // battle_engine.js 互換用
+    turn_seat: "A",
+    winner_seat: null,
+    loser_seat: null,
+
     game_over: false,
     status_message: "",
     turn_time_left: TURN_TIME_LIMIT_SECONDS,
@@ -1364,6 +1370,13 @@ function makeInitialMatchState(match) {
 
     player1,
     player2,
+
+    // battle_engine.js 互換用。
+    // 同じ player object を参照させるので、player1/player2 と二重管理にならない。
+    players: {
+      A: player1,
+      B: player2
+    },
 
     selecting_target: false,
     selecting_hand_card: false,
@@ -1376,13 +1389,39 @@ function makeInitialMatchState(match) {
     selected_attacker_index: -1,
     pending_ability: {},
 
+    // battle_engine.js 互換用
+    selected: null,
+    pending_deaths: [],
+    pending_summons: [],
+
     battle_log_messages: [],
+
+    // battle_engine.js 互換用
+    log: [],
 
     seat_to_owner_id: { A: "player1", B: "player2" },
     owner_to_seat_id: { player1: "A", player2: "B" }
   };
 
+  // 既存Godot表示形式用のターン開始。
+  // ここで初手3枚のあと、先攻1ドロー + mana 1 になる。
   startServerTurn(state);
+
+  // startServerTurn後に current_player_id / timer / mana が確定するので同期。
+  state.turn_seat = state.owner_to_seat_id[state.current_player_id] || "A";
+
+  // battle_engine.js 側の normalize は players.A/B 前提なので、
+  // ここでは state.players を作った後に呼ぶ。
+  normalizeStateRuntime(state);
+
+  // normalizeStateRuntime が log を見るので、既存ログも合わせる。
+  if (Array.isArray(state.battle_log_messages) && Array.isArray(state.log)) {
+    for (const message of state.battle_log_messages) {
+      if (!state.log.includes(message)) {
+        state.log.push(message);
+      }
+    }
+  }
 
   return state;
 }
@@ -2227,49 +2266,49 @@ function handleClientMessage(client, message) {
     }
 
     case "battle_action": {
-      const matchId = String(message.match_id || "");
-      const seatId = String(message.seat_id || "");
-      const action = String(message.action || "");
-      const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
+  const matchId = String(message.match_id || "");
+  const seatId = String(message.seat_id || "");
+  const action = String(message.action || "");
+  const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
 
-      if (!matchId || !seatId || !action) {
-        sendActionRejected(client.client_id, "Invalid battle_action message.");
-        return;
-      }
+  if (!matchId || !seatId || !action) {
+    sendActionRejected(client.client_id, "Invalid battle_action message.");
+    return;
+  }
 
-      const match = matches.get(matchId);
+  const match = matches.get(matchId);
 
-      if (!match) {
-        sendActionRejected(client.client_id, "Match not found.");
-        return;
-      }
+  if (!match) {
+    sendActionRejected(client.client_id, "Match not found.");
+    return;
+  }
 
-      if (client.match_id !== matchId) {
-        sendActionRejected(client.client_id, "You are not in this match.");
-        return;
-      }
+  if (client.match_id !== matchId) {
+    sendActionRejected(client.client_id, "You are not in this match.");
+    return;
+  }
 
-      if (client.seat_id !== seatId) {
-        sendActionRejected(client.client_id, "Invalid seat for this client.");
-        return;
-      }
+  if (client.seat_id !== seatId) {
+    sendActionRejected(client.client_id, "Invalid seat for this client.");
+    return;
+  }
 
-      const result = handleServerBattleAction(match, seatId, action, payload);
+  const result = handleServerBattleAction(match, seatId, action, payload);
 
-      if (!result.ok) {
-        sendActionRejected(client.client_id, result.message || "Action rejected.");
-        return;
-      }
+  if (!result.ok) {
+    sendActionRejected(client.client_id, result.message || "Action rejected.");
+    return;
+  }
 
-      match.state = result.state || match.state;
-      broadcastMatchState(matchId, match.state);
+  match.state = result.state || match.state;
+  broadcastMatchState(matchId, match.state);
 
-      if (match.state && match.state.game_over) {
-        destroyMatch(matchId, "Match finished.");
-      }
+  if (match.state && match.state.game_over) {
+    destroyMatch(matchId, "Match finished.");
+  }
 
-      return;
-    }
+  return;
+}
 
     case "ping": {
       safeSend(client.ws, { type: "pong" });
