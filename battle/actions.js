@@ -15,6 +15,10 @@ function ensureState(state) {
   return state;
 }
 
+function addLog(state, message) {
+  S.addLog(state, message);
+}
+
 function getOpponentSeat(seatId) {
   return U.otherSeat(seatId);
 }
@@ -23,12 +27,13 @@ function getOwnerIdForSeat(seatId) {
   return U.seatToOwnerId(seatId);
 }
 
-function addLog(state, message) {
-  S.addLog(state, message);
-}
-
 function clearPendingState(state) {
   S.clearSelection(state);
+
+  state.selecting_hand_card = false;
+  state.pending_hand_selection_effect = "";
+  state.pending_hand_selection_owner = "";
+  state.pending_hand_candidate_indexes = [];
 
   if (!Array.isArray(state.pending_deaths)) {
     state.pending_deaths = [];
@@ -39,9 +44,16 @@ function clearPendingState(state) {
   }
 }
 
-function checkGameOver(state) {
-  S.syncLegacy(state);
-  return state.game_over === true;
+function validateTurnAction(state, seatId) {
+  if (state.game_over) {
+    return { ok: false, message: "Game is already over." };
+  }
+
+  if (state.turn_seat !== seatId) {
+    return { ok: false, message: "Not your turn." };
+  }
+
+  return { ok: true, message: "ok" };
 }
 
 function getPayloadHandIndex(payload) {
@@ -50,6 +62,7 @@ function getPayloadHandIndex(payload) {
     payload.handIndex ??
     payload.index ??
     payload.card_index ??
+    payload.cardIndex ??
     -1;
 
   return Number(raw);
@@ -60,7 +73,9 @@ function getPayloadBoardIndex(payload) {
     payload.board_index ??
     payload.boardIndex ??
     payload.target_index ??
+    payload.targetIndex ??
     payload.unit_index ??
+    payload.unitIndex ??
     payload.index ??
     -1;
 
@@ -85,6 +100,7 @@ function getPayloadOwnerSeat(state, payload, fallbackSeat = "") {
 
 function getFirstPlayableAbility(card) {
   const abilities = U.getAbilities(card);
+
   if (!Array.isArray(abilities) || abilities.length <= 0) {
     return {};
   }
@@ -102,21 +118,27 @@ function getFirstPlayableAbility(card) {
   return noTrigger || abilities[0] || {};
 }
 
-function cardNeedsTarget(state, seatId, card) {
-  const targetType = String(card?.target_type || C.TARGET_NONE);
-
-  if (targetType === C.TARGET_NONE || targetType === "") {
-    return false;
+function getSelectedAttackerSeat(state) {
+  if (!state.selected_attacker_owner) {
+    return "";
   }
 
-  return Targets.hasValidPlayTargetForCard(state, seatId, card);
+  return U.normalizeOwnerToSeat(state, state.selected_attacker_owner);
+}
+
+function getPendingCardSeat(state) {
+  if (!state.pending_card_owner) {
+    return "";
+  }
+
+  return U.normalizeOwnerToSeat(state, state.pending_card_owner);
 }
 
 function setPendingCardTarget(state, seatId, handIndex, card) {
   state.selecting_target = true;
-  state.selecting_hand_card = true;
+  state.selecting_hand_card = false;
   state.pending_action_type = U.isSpell(card) ? C.ACTION_SPELL : C.ACTION_ABILITY;
-  state.pending_card = U.deepClone(card);
+  state.pending_card = U.copyCardData(card);
   state.pending_hand_index = Number(handIndex);
   state.pending_card_owner = getOwnerIdForSeat(seatId);
   state.pending_attacker_index = -1;
@@ -145,35 +167,222 @@ function setSelectedAttacker(state, seatId, boardIndex, attacker) {
     board_index: Number(boardIndex)
   };
 
-  addLog(state, `Selected ${U.cardName(attacker)} as attacker.`);
+  addLog(state, `Selected attacker: ${U.cardName(attacker)}.`);
 }
 
-function getSelectedAttackerSeat(state) {
-  if (!state.selected_attacker_owner) {
-    return "";
+function cancelTargetSelection(state, seatId) {
+  ensureState(state);
+
+  if (!state.selecting_target && !state.selecting_hand_card) {
+    return { ok: true, state };
   }
 
-  return U.normalizeOwnerToSeat(state, state.selected_attacker_owner);
+  const pendingSeat = getPendingCardSeat(state);
+
+  if (pendingSeat && pendingSeat !== seatId) {
+    return { ok: false, state, message: "This pending action belongs to another player." };
+  }
+
+  if (state.pending_action_type === C.ACTION_SPELL && state.pending_card) {
+    const player = U.getPlayer(state, seatId);
+    if (player) {
+      CardOps.returnCardToHand(player, state.pending_card);
+      addLog(state, `Target selection cancelled. ${U.cardName(state.pending_card)} returned to hand.`);
+    }
+  } else if (state.pending_action_type === C.ACTION_UNIT_ATTACK) {
+    addLog(state, "Attack target selection cancelled.");
+  } else if (state.pending_action_type === C.ACTION_ABILITY) {
+    addLog(state, "Ability target selection cancelled.");
+  } else if (state.pending_action_type === C.ACTION_HAND_SELECTION) {
+    addLog(state, "Hand selection cancelled.");
+  } else {
+    addLog(state, "Selection cancelled.");
+  }
+
+  clearPendingState(state);
+  S.syncLegacy(state);
+
+  return { ok: true, state };
 }
 
-function getPendingCardSeat(state) {
-  if (!state.pending_card_owner) {
-    return "";
+function validateCanPlayCard(state, seatId, player, card) {
+  const turn = validateTurnAction(state, seatId);
+  if (!turn.ok) {
+    return { ok: false, message: turn.message };
   }
 
-  return U.normalizeOwnerToSeat(state, state.pending_card_owner);
-}
-
-function validateTurnAction(state, seatId) {
-  if (state.game_over) {
-    return { ok: false, message: "Game is already over." };
+  if (!player) {
+    return { ok: false, message: "Player is missing." };
   }
 
-  if (state.turn_seat !== seatId) {
-    return { ok: false, message: "Not your turn." };
+  if (!card) {
+    return { ok: false, message: "Card is missing." };
+  }
+
+  if (state.selecting_target || state.selecting_hand_card) {
+    return { ok: false, message: "Already selecting a target." };
+  }
+
+  const cost = CardOps.getCardPlayCost(player, card);
+  if (Number(player.mana || 0) < cost) {
+    return { ok: false, message: "Not enough mana." };
+  }
+
+  if (U.isUnit(card) && Array.isArray(player.board) && player.board.length >= C.MAX_BOARD_SIZE) {
+    return { ok: false, message: "Board is full." };
+  }
+
+  if (U.isSpell(card)) {
+    if (!Targets.hasValidPlayTargetForCard(state, seatId, card)) {
+      return { ok: false, message: "No valid target for this card." };
+    }
   }
 
   return { ok: true, message: "ok" };
+}
+
+function consumeCardFromHandAndPayCost(state, seatId, handIndex) {
+  const player = U.getPlayer(state, seatId);
+  if (!player) return null;
+
+  const index = Number(handIndex);
+  if (index < 0 || index >= player.hand.length) return null;
+
+  const card = player.hand[index];
+  S.normalizeCard(card);
+
+  const cost = CardOps.getCardPlayCost(player, card);
+  if (!CardOps.spendMana(player, cost)) {
+    return null;
+  }
+
+  const playedCard = CardOps.removeCardFromHand(player, index);
+  if (!playedCard) {
+    player.mana = Number(player.mana || 0) + cost;
+    return null;
+  }
+
+  CardOps.applyPlayCostPostEffects(player, playedCard);
+  S.normalizeCard(playedCard);
+
+  return playedCard;
+}
+
+function playCardFromHand(state, seatId, handIndex, target = null, deps = {}) {
+  ensureState(state);
+
+  const player = U.getPlayer(state, seatId);
+  const index = Number(handIndex);
+  const card = player?.hand?.[index] || null;
+
+  const playCheck = validateCanPlayCard(state, seatId, player, card);
+  if (!playCheck.ok) {
+    return { ok: false, state, message: playCheck.message };
+  }
+
+  const needsTarget =
+    String(card.target_type || C.TARGET_NONE) !== C.TARGET_NONE &&
+    String(card.target_type || "") !== "";
+
+  if (needsTarget) {
+    const targetCheck = Targets.isValidTargetForCard(state, seatId, card, target);
+    if (!targetCheck.ok) {
+      return { ok: false, state, message: targetCheck.message };
+    }
+  }
+
+  const playedCard = consumeCardFromHandAndPayCost(state, seatId, index);
+  if (!playedCard) {
+    return { ok: false, state, message: "Failed to play card." };
+  }
+
+  clearPendingState(state);
+
+  if (U.isUnit(playedCard)) {
+    return playUnitCard(state, seatId, playedCard, target, deps);
+  }
+
+  if (U.isSpell(playedCard)) {
+    return playSpellCard(state, seatId, playedCard, target, deps);
+  }
+
+  CardOps.moveCardToGraveyard(player, playedCard);
+  addLog(state, `${player.name} played ${U.cardName(playedCard)}.`);
+  S.syncLegacy(state);
+
+  return { ok: true, state };
+}
+
+function playUnitCard(state, seatId, playedCard, target = null, deps = {}) {
+  const player = U.getPlayer(state, seatId);
+  if (!player) {
+    return { ok: false, state, message: "Player is missing." };
+  }
+
+  Combat.applySummonState(playedCard, player);
+
+  player.board.push(playedCard);
+
+  CardOps.incrementPlayedTraitCounts(player, playedCard);
+
+  const battlecryAbilities = U.getAbilities(playedCard, C.TRIGGER_BATTLECRY);
+
+  if (battlecryAbilities.length > 0) {
+    Triggers.resolveBattlecry(state, seatId, playedCard, {
+      played_seat: seatId,
+      played_card: playedCard,
+      target
+    }, deps);
+  }
+
+  Triggers.resolveOnUnitPlayed(state, seatId, playedCard, deps);
+
+  Combat.processDeathQueue(state, deps);
+  addLog(state, `${player.name} played ${U.cardName(playedCard)}.`);
+  S.syncLegacy(state);
+
+  return { ok: true, state };
+}
+
+function playSpellCard(state, seatId, playedCard, target = null, deps = {}) {
+  const player = U.getPlayer(state, seatId);
+  if (!player) {
+    return { ok: false, state, message: "Player is missing." };
+  }
+
+  const ability = getFirstPlayableAbility(playedCard);
+
+  if (String(playedCard.effect_id || "") !== C.EFFECT_ADD_ZERO_COST_COPIES_OF_LAST_SPELL) {
+    CardOps.setLastSpell(player, playedCard);
+  }
+
+  const result = Effects.resolveSpellOrCardEffect(
+    state,
+    seatId,
+    playedCard,
+    target,
+    ability,
+    deps
+  );
+
+  if (result && result.pending) {
+    /*
+      手札選択系はカードを消費済みのままpendingにする。
+      選択完了時にEffects側で墓地へ送る。
+    */
+    S.syncLegacy(state);
+    return { ok: true, state };
+  }
+
+  Triggers.resolveOnSpellPlayed(state, seatId, playedCard, deps);
+
+  CardOps.moveCardToGraveyard(player, playedCard);
+
+  Combat.processDeathQueue(state, deps);
+  addLog(state, `${player.name} cast ${U.cardName(playedCard)}.`);
+  S.syncLegacy(state);
+
+  return { ok: true, state };
 }
 
 function resolvePendingCardTarget(state, seatId, target, deps = {}) {
@@ -194,6 +403,10 @@ function resolvePendingCardTarget(state, seatId, target, deps = {}) {
     return { ok: false, state, message: turn.message };
   }
 
+  if (state.pending_action_type === C.ACTION_ABILITY) {
+    return Triggers.resolvePendingAbilityTarget(state, seatId, target, deps);
+  }
+
   const handIndex = Number(state.pending_hand_index ?? -1);
   const player = U.getPlayer(state, seatId);
 
@@ -212,125 +425,21 @@ function resolvePendingCardTarget(state, seatId, target, deps = {}) {
   return playCardFromHand(state, seatId, handIndex, target, deps);
 }
 
-function playCardFromHand(state, seatId, handIndex, target = null, deps = {}) {
-  ensureState(state);
-
-  const turn = validateTurnAction(state, seatId);
-  if (!turn.ok) {
-    return { ok: false, state, message: turn.message };
-  }
-
-  const player = U.getPlayer(state, seatId);
-  if (!player) {
-    return { ok: false, state, message: "Player is missing." };
-  }
-
-  const index = Number(handIndex);
-  if (index < 0 || index >= player.hand.length) {
-    return { ok: false, state, message: "Invalid hand index." };
-  }
-
-  const card = player.hand[index];
-  S.normalizeCard(card);
-
-  const cost = CardOps.getCardPlayCost(player, card);
-  if (Number(player.mana || 0) < cost) {
-    return { ok: false, state, message: "Not enough mana." };
-  }
-
-  const needsTarget = String(card.target_type || C.TARGET_NONE) !== C.TARGET_NONE &&
-    String(card.target_type || "") !== "";
-
-  if (needsTarget) {
-    const targetCheck = Targets.isValidTargetForCard(state, seatId, card, target);
-    if (!targetCheck.ok) {
-      return { ok: false, state, message: targetCheck.message };
-    }
-  }
-
-  if (U.isUnit(card) && player.board.length >= C.MAX_BOARD_SIZE) {
-    return { ok: false, state, message: "Board is full." };
-  }
-
-  const playedCard = CardOps.removeCardFromHand(player, index);
-  if (!playedCard) {
-    return { ok: false, state, message: "Failed to remove card from hand." };
-  }
-
-  CardOps.spendMana(player, cost);
-  CardOps.applyPlayCostPostEffects(player, playedCard);
-  S.normalizeCard(playedCard);
-
-  clearPendingState(state);
-
-  if (U.isUnit(playedCard)) {
-    Combat.applySummonState(playedCard);
-    player.board.push(playedCard);
-
-    if (U.hasTrait(playedCard, "scholar")) {
-      player.scholar_cards_played_this_game = Number(player.scholar_cards_played_this_game || 0) + 1;
-      player.scholar_played_count = player.scholar_cards_played_this_game;
-    }
-
-    if (Triggers && typeof Triggers.resolveBattlecry === "function") {
-      Triggers.resolveBattlecry(state, seatId, playedCard, {
-        played_seat: seatId,
-        played_card: playedCard,
-        target: target
-      }, deps);
-    }
-
-    if (Triggers && typeof Triggers.resolveOnUnitPlayed === "function") {
-      Triggers.resolveOnUnitPlayed(state, seatId, playedCard, deps);
-    }
-
-    Combat.processDeathQueue(state, deps);
-    addLog(state, `${player.name} played ${U.cardName(playedCard)}.`);
-    S.syncLegacy(state);
-
-    return { ok: true, state };
-  }
-
-  if (U.isSpell(playedCard)) {
-    const ability = getFirstPlayableAbility(playedCard);
-
-    CardOps.setLastSpell(player, playedCard);
-
-    Effects.resolveSpellOrCardEffect(
-      state,
-      seatId,
-      playedCard,
-      target,
-      ability,
-      deps
-    );
-
-    if (Triggers && typeof Triggers.resolveOnSpellPlayed === "function") {
-      Triggers.resolveOnSpellPlayed(state, seatId, playedCard, deps);
-    }
-
-    CardOps.moveCardToGraveyard(player, playedCard);
-
-    Combat.processDeathQueue(state, deps);
-    addLog(state, `${player.name} cast ${U.cardName(playedCard)}.`);
-    S.syncLegacy(state);
-
-    return { ok: true, state };
-  }
-
-  CardOps.moveCardToGraveyard(player, playedCard);
-  addLog(state, `${player.name} played ${U.cardName(playedCard)}.`);
-  S.syncLegacy(state);
-
-  return { ok: true, state };
-}
-
 function handleHandCardClicked(state, seatId, payload, deps = {}) {
   ensureState(state);
 
   const turn = validateTurnAction(state, seatId);
   if (!turn.ok) {
     return { ok: false, state, message: turn.message };
+  }
+
+  if (state.selecting_hand_card) {
+    const handIndex = getPayloadHandIndex(payload);
+    return Effects.resolveHandSelection(state, seatId, handIndex, deps);
+  }
+
+  if (state.selecting_target) {
+    return { ok: false, state, message: "Target selection is active." };
   }
 
   const player = U.getPlayer(state, seatId);
@@ -346,23 +455,18 @@ function handleHandCardClicked(state, seatId, payload, deps = {}) {
   const card = player.hand[handIndex];
   S.normalizeCard(card);
 
-  const cost = CardOps.getCardPlayCost(player, card);
-  if (Number(player.mana || 0) < cost) {
-    return { ok: false, state, message: "Not enough mana." };
+  const playCheck = validateCanPlayCard(state, seatId, player, card);
+  if (!playCheck.ok) {
+    return { ok: false, state, message: playCheck.message };
   }
 
-  if (U.isUnit(card) && player.board.length >= C.MAX_BOARD_SIZE) {
-    return { ok: false, state, message: "Board is full." };
-  }
+  const needsTarget =
+    String(card.target_type || C.TARGET_NONE) !== C.TARGET_NONE &&
+    String(card.target_type || "") !== "";
 
-  if (String(card.target_type || C.TARGET_NONE) !== C.TARGET_NONE && String(card.target_type || "") !== "") {
-    if (!Targets.hasValidPlayTargetForCard(state, seatId, card)) {
-      return { ok: false, state, message: "No valid target for this card." };
-    }
-
+  if (needsTarget) {
     setPendingCardTarget(state, seatId, handIndex, card);
     S.syncLegacy(state);
-
     return { ok: true, state };
   }
 
@@ -386,6 +490,10 @@ function handleBoardSlotClicked(state, seatId, payload, deps = {}) {
 
   const clickedUnit = clickedPlayer.board[boardIndex];
 
+  if (state.selecting_hand_card) {
+    return { ok: false, state, message: "Hand selection is active." };
+  }
+
   if (state.selecting_target && state.pending_action_type !== C.ACTION_UNIT_ATTACK) {
     const target = {
       type: "unit",
@@ -393,12 +501,24 @@ function handleBoardSlotClicked(state, seatId, payload, deps = {}) {
       board_index: boardIndex
     };
 
+    if (state.pending_action_type === C.ACTION_SPELL) {
+      if (!Targets.isValidTargetForPendingSpell(state, seatId, clickedSeat, "unit")) {
+        return { ok: false, state, message: "Invalid spell target." };
+      }
+    }
+
+    if (state.pending_action_type === C.ACTION_ABILITY) {
+      if (!Targets.isValidTargetForPendingAbility(state, seatId, clickedSeat, "unit")) {
+        return { ok: false, state, message: "Invalid ability target." };
+      }
+    }
+
     return resolvePendingCardTarget(state, seatId, target, deps);
   }
 
-  if (state.pending_action_type === C.ACTION_UNIT_ATTACK || state.selected_attacker_index >= 0) {
+  if (state.pending_action_type === C.ACTION_UNIT_ATTACK || Number(state.selected_attacker_index ?? -1) >= 0) {
     const attackerSeat = getSelectedAttackerSeat(state);
-    const attackerIndex = Number(state.selected_attacker_index ?? -1);
+    const attackerIndex = Number(state.selected_attacker_index ?? state.pending_attacker_index ?? -1);
 
     if (!attackerSeat || attackerIndex < 0) {
       clearPendingState(state);
@@ -440,8 +560,10 @@ function handleBoardSlotClicked(state, seatId, payload, deps = {}) {
     }
 
     const can = Combat.canAttack(state, seatId, clickedUnit, "unit");
-    if (!can.ok) {
-      return { ok: false, state, message: can.message };
+    const canFace = Combat.canAttack(state, seatId, clickedUnit, "player");
+
+    if (!can.ok && !canFace.ok) {
+      return { ok: false, state, message: can.message || canFace.message || "This unit cannot attack." };
     }
 
     setSelectedAttacker(state, seatId, boardIndex, clickedUnit);
@@ -461,18 +583,34 @@ function handlePlayerFaceClicked(state, seatId, payload, deps = {}) {
     return { ok: false, state, message: "Invalid player target." };
   }
 
+  if (state.selecting_hand_card) {
+    return { ok: false, state, message: "Hand selection is active." };
+  }
+
   if (state.selecting_target && state.pending_action_type !== C.ACTION_UNIT_ATTACK) {
     const target = {
       type: "player",
       owner_seat: clickedSeat
     };
 
+    if (state.pending_action_type === C.ACTION_SPELL) {
+      if (!Targets.isValidTargetForPendingSpell(state, seatId, clickedSeat, "player")) {
+        return { ok: false, state, message: "Invalid spell target." };
+      }
+    }
+
+    if (state.pending_action_type === C.ACTION_ABILITY) {
+      if (!Targets.isValidTargetForPendingAbility(state, seatId, clickedSeat, "player")) {
+        return { ok: false, state, message: "Invalid ability target." };
+      }
+    }
+
     return resolvePendingCardTarget(state, seatId, target, deps);
   }
 
-  if (state.pending_action_type === C.ACTION_UNIT_ATTACK || state.selected_attacker_index >= 0) {
+  if (state.pending_action_type === C.ACTION_UNIT_ATTACK || Number(state.selected_attacker_index ?? -1) >= 0) {
     const attackerSeat = getSelectedAttackerSeat(state);
-    const attackerIndex = Number(state.selected_attacker_index ?? -1);
+    const attackerIndex = Number(state.selected_attacker_index ?? state.pending_attacker_index ?? -1);
 
     if (!attackerSeat || attackerIndex < 0) {
       clearPendingState(state);
@@ -499,10 +637,26 @@ function handlePlayerFaceClicked(state, seatId, payload, deps = {}) {
   return { ok: false, state, message: "Select an attacker or pending card first." };
 }
 
+function handleSelectHandCard(state, seatId, payload, deps = {}) {
+  ensureState(state);
+
+  if (!state.selecting_hand_card) {
+    return { ok: false, state, message: "No hand selection is active." };
+  }
+
+  const turn = validateTurnAction(state, seatId);
+  if (!turn.ok) {
+    return { ok: false, state, message: turn.message };
+  }
+
+  const handIndex = getPayloadHandIndex(payload);
+  return Effects.resolveHandSelection(state, seatId, handIndex, deps);
+}
+
 function beginTurn(state, seatId, deps = {}) {
   ensureState(state);
 
-  const activeSeat = seatId || state.turn_seat || "A";
+  const activeSeat = seatId || state.turn_seat || C.SEAT_A;
   const player = U.getPlayer(state, activeSeat);
 
   if (!player) {
@@ -513,9 +667,7 @@ function beginTurn(state, seatId, deps = {}) {
     return { ok: false, state, message: "Game is already over." };
   }
 
-  if (Triggers && typeof Triggers.clearExpiredTemporaryKeywords === "function") {
-    Triggers.clearExpiredTemporaryKeywords(state, activeSeat);
-  }
+  clearPendingState(state);
 
   S.beginTurnBasics(state, activeSeat);
 
@@ -523,15 +675,12 @@ function beginTurn(state, seatId, deps = {}) {
 
   if (!drawn) {
     S.syncLegacy(state);
-
     if (state.game_over) {
       return { ok: true, state };
     }
   }
 
-  if (Triggers && typeof Triggers.resolveTurnStart === "function") {
-    Triggers.resolveTurnStart(state, activeSeat, deps);
-  }
+  Triggers.resolveTurnStart(state, activeSeat, deps);
 
   addLog(state, `Turn ${Number(state.turn_number || 1)}: ${player.name}'s turn started.`);
 
@@ -544,7 +693,7 @@ function beginTurn(state, seatId, deps = {}) {
 function endTurn(state, seatId, deps = {}) {
   ensureState(state);
 
-  const activeSeat = seatId || state.turn_seat || "A";
+  const activeSeat = seatId || state.turn_seat || C.SEAT_A;
   const player = U.getPlayer(state, activeSeat);
 
   if (!player) {
@@ -563,9 +712,7 @@ function endTurn(state, seatId, deps = {}) {
   state.turn_timer_timeout_handled = true;
   state.turn_time_left = 0.0;
 
-  if (Triggers && typeof Triggers.resolveTurnEnd === "function") {
-    Triggers.resolveTurnEnd(state, activeSeat, deps);
-  }
+  Triggers.resolveTurnEnd(state, activeSeat, deps);
 
   Combat.processDeathQueue(state, deps);
   addLog(state, `${player.name}'s turn ended.`);
@@ -616,7 +763,7 @@ function handleBattleAction(match, seatId, payload, deps = {}) {
 
   const action = String(payload && payload.action ? payload.action : "");
 
-  if (!seatId || (seatId !== "A" && seatId !== "B")) {
+  if (!seatId || (seatId !== C.SEAT_A && seatId !== C.SEAT_B)) {
     return { ok: false, state, message: "Invalid seat." };
   }
 
@@ -636,6 +783,15 @@ function handleBattleAction(match, seatId, payload, deps = {}) {
     case "player_face_clicked":
       return handlePlayerFaceClicked(state, seatId, payload || {}, deps);
 
+    case "select_hand_card":
+    case "hand_selection_clicked":
+      return handleSelectHandCard(state, seatId, payload || {}, deps);
+
+    case "cancel_target_selection":
+    case "cancel_hand_selection":
+    case "cancel_selection":
+      return cancelTargetSelection(state, seatId);
+
     default:
       return {
         ok: false,
@@ -647,7 +803,19 @@ function handleBattleAction(match, seatId, payload, deps = {}) {
 
 module.exports = {
   handleBattleAction,
+
   beginTurn,
   endTurn,
-  playCardFromHand
+  surrender,
+
+  playCardFromHand,
+  playUnitCard,
+  playSpellCard,
+
+  handleHandCardClicked,
+  handleBoardSlotClicked,
+  handlePlayerFaceClicked,
+  handleSelectHandCard,
+
+  cancelTargetSelection
 };
