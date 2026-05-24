@@ -2,669 +2,989 @@
 
 const C = require("./constants");
 const U = require("./utils");
+const S = require("./state");
 
-function getTargetFromPayload(state, payload = {}) {
-  if (!state || !payload || typeof payload !== "object") {
+function lazyTriggers() {
+  try {
+    return require("./triggers");
+  } catch (_err) {
     return null;
   }
+}
 
-  const rawOwner =
-    payload.owner_seat ??
-    payload.ownerSeat ??
-    payload.target_owner ??
-    payload.targetOwner ??
-    payload.board_owner ??
-    payload.boardOwner ??
-    payload.owner_id ??
-    payload.ownerId ??
-    payload.owner ??
-    payload.player_owner ??
-    payload.playerOwner ??
-    payload.player_id ??
-    payload.playerId ??
-    "";
+function getCtx(ctx = {}) {
+  return ctx && typeof ctx === "object" ? ctx : {};
+}
 
-  const ownerSeat = U.normalizeOwnerToSeat(state, rawOwner);
+function addLog(state, message) {
+  if (!state || !message) return;
 
-  const rawIndex =
-    payload.board_index ??
-    payload.boardIndex ??
-    payload.target_index ??
-    payload.targetIndex ??
-    payload.unit_index ??
-    payload.unitIndex ??
-    payload.index ??
-    -1;
+  if (S && typeof S.addLog === "function") {
+    S.addLog(state, String(message));
+    return;
+  }
 
-  const boardIndex = Number(rawIndex);
+  if (!Array.isArray(state.battle_log_messages)) {
+    state.battle_log_messages = [];
+  }
 
-  const rawType = String(
-    payload.target_type ??
-    payload.targetType ??
-    payload.target_kind ??
-    payload.targetKind ??
-    payload.kind ??
-    payload.type ??
-    ""
-  );
+  if (!Array.isArray(state.log)) {
+    state.log = [];
+  }
 
-  const isLeader =
-    payload.is_leader === true ||
-    payload.isLeader === true ||
-    payload.face === true ||
-    payload.is_face === true ||
-    payload.isFace === true ||
-    rawType === "player" ||
-    rawType === "face" ||
-    rawType === "leader";
+  const text = String(message);
+  state.status_message = text;
+  state.battle_log_messages.push(text);
+  state.log.push(text);
+}
 
-  if (isLeader) {
-    if (!ownerSeat) return null;
+function normalizeStateSoft(state) {
+  if (!state || typeof state !== "object") {
+    return state;
+  }
 
-    return {
-      type: "player",
-      owner_seat: ownerSeat
+  if (!state.players || typeof state.players !== "object") {
+    state.players = {
+      [C.SEAT_A]: state.player1,
+      [C.SEAT_B]: state.player2
     };
   }
 
-  if (ownerSeat && boardIndex >= 0) {
-    return {
-      type: "unit",
-      owner_seat: ownerSeat,
-      board_index: boardIndex
-    };
+  if (state.players[C.SEAT_A]) {
+    state.player1 = state.players[C.SEAT_A];
   }
 
-  return null;
-}
-
-function getUnitByTarget(state, target) {
-  if (!state || !target || target.type !== "unit") {
-    return null;
+  if (state.players[C.SEAT_B]) {
+    state.player2 = state.players[C.SEAT_B];
   }
 
-  const owner = U.getPlayer(state, target.owner_seat);
-  if (!owner || !Array.isArray(owner.board)) {
-    return null;
+  if (!Array.isArray(state.pending_deaths)) {
+    state.pending_deaths = [];
   }
 
-  const index = Number(target.board_index);
-  if (index < 0 || index >= owner.board.length) {
-    return null;
+  if (!Array.isArray(state.pending_summons)) {
+    state.pending_summons = [];
   }
 
-  return owner.board[index] || null;
-}
-
-function getPlayerByTarget(state, target) {
-  if (!state || !target || target.type !== "player") {
-    return null;
-  }
-
-  return U.getPlayer(state, target.owner_seat);
-}
-
-function getTargetOwner(state, target) {
-  if (!state || !target) return null;
-  return U.getPlayer(state, target.owner_seat);
-}
-
-function getTargetOwnerId(state, target) {
-  if (!state || !target) return "";
-  return U.seatToOwnerId(target.owner_seat);
-}
-
-function isFriendlyTarget(sourceSeat, targetSeat) {
-  return sourceSeat === targetSeat;
-}
-
-function isEnemyTarget(sourceSeat, targetSeat) {
-  return sourceSeat !== targetSeat;
-}
-
-function spellCanTargetUnitByAbilityFilter(state, sourceSeat, card, unit) {
-  if (!state || !card || !unit) {
-    return false;
-  }
-
-  const abilities = U.getAbilities(card);
-
-  if (abilities.length <= 0) {
-    return true;
-  }
-
-  const ability = abilities[0];
-  if (!ability || typeof ability !== "object") {
-    return true;
-  }
-
-  const requiredTrait = U.normalizeLowerString(ability.trait || "");
-  if (requiredTrait && !U.hasTrait(unit, requiredTrait)) {
-    return false;
-  }
-
-  const damagedOnly = Boolean(ability.damaged_only || false);
-  if (damagedOnly && Number(unit.hp || 0) >= Number(unit.max_hp || 0)) {
-    return false;
-  }
-
-  return true;
-}
-
-function canSpellAffectUnit(state, sourceSeat, card, targetSeat, unit) {
-  if (!state || !card || !unit) {
-    return false;
-  }
-
-  const owner = U.getPlayer(state, targetSeat);
-
-  if (U.isUntrickableUnit(owner, unit)) {
-    return false;
-  }
-
-  const effectId = String(card.effect_id || "");
-
-  if (
-    effectId === C.EFFECT_ADD_KEYWORD ||
-    effectId === C.EFFECT_DESTROY_FRIENDLY_TRAIT_UNIT_COPY_TO_HAND_BUFF ||
-    effectId === C.EFFECT_POETRY_OF_RESILIENCE
-  ) {
-    return spellCanTargetUnitByAbilityFilter(state, sourceSeat, card, unit);
-  }
-
-  return true;
-}
-
-function hasValidAnyUnitTargetForSpell(state, sourceSeat, card) {
   for (const seat of [C.SEAT_A, C.SEAT_B]) {
     const player = U.getPlayer(state, seat);
-    if (!player || !Array.isArray(player.board)) continue;
 
-    for (const unit of player.board) {
-      if (!unit || !U.isUnit(unit)) continue;
-
-      if (!canSpellAffectUnit(state, sourceSeat, card, seat, unit)) {
-        continue;
-      }
-
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function hasValidFriendlyUnitTargetForSpell(state, sourceSeat, card) {
-  const player = U.getPlayer(state, sourceSeat);
-  if (!player || !Array.isArray(player.board)) {
-    return false;
-  }
-
-  for (const unit of player.board) {
-    if (!unit || !U.isUnit(unit)) continue;
-
-    if (!canSpellAffectUnit(state, sourceSeat, card, sourceSeat, unit)) {
+    if (!player) {
       continue;
     }
 
+    if (!Array.isArray(player.deck)) player.deck = [];
+    if (!Array.isArray(player.hand)) player.hand = [];
+    if (!Array.isArray(player.board)) player.board = [];
+    if (!Array.isArray(player.graveyard)) player.graveyard = [];
+  }
+
+  return state;
+}
+
+function getPlayer(state, seatId) {
+  normalizeStateSoft(state);
+  return U.getPlayer(state, seatId);
+}
+
+function getOpponentSeat(seatId) {
+  return U.otherSeat(seatId);
+}
+
+function getUnitIndex(player, unitOrIndex) {
+  if (!player || !Array.isArray(player.board)) {
+    return -1;
+  }
+
+  if (typeof unitOrIndex === "number") {
+    const index = Number(unitOrIndex);
+    return index >= 0 && index < player.board.length ? index : -1;
+  }
+
+  return player.board.indexOf(unitOrIndex);
+}
+
+function getUnit(state, seatId, unitOrIndex) {
+  const player = getPlayer(state, seatId);
+
+  if (!player) {
+    return null;
+  }
+
+  const index = getUnitIndex(player, unitOrIndex);
+
+  if (index < 0) {
+    return null;
+  }
+
+  return player.board[index] || null;
+}
+
+function hasKeyword(card, keyword) {
+  return U.hasEffectiveKeyword
+    ? U.hasEffectiveKeyword(card, null, keyword)
+    : U.hasKeyword(card, keyword);
+}
+
+function isInvincible(unit) {
+  if (!unit) return false;
+
+  if (U.hasKeyword && U.hasKeyword(unit, C.KEYWORD_INVINCIBLE || "invincible")) {
     return true;
+  }
+
+  if (U.hasKeyword && U.hasKeyword(unit, "invincible")) {
+    return true;
+  }
+
+  if (Array.isArray(unit.keywords)) {
+    return unit.keywords.includes(C.KEYWORD_INVINCIBLE || "invincible") || unit.keywords.includes("invincible");
   }
 
   return false;
 }
 
-function hasValidEnemyUnitTargetForSpell(state, sourceSeat, card) {
-  const enemySeat = U.otherSeat(sourceSeat);
-  const enemy = U.getPlayer(state, enemySeat);
+function isDeadUnit(unit) {
+  if (!unit) return false;
+  if (isInvincible(unit)) return false;
+  return Number(unit.hp || 0) <= 0 || Number(unit.max_hp || 0) <= 0;
+}
 
+function syncState(state) {
+  if (!state) return state;
+
+  if (S && typeof S.syncLegacy === "function") {
+    S.syncLegacy(state);
+  } else if (S && typeof S.normalizeState === "function") {
+    S.normalizeState(state);
+  }
+
+  return state;
+}
+
+function markGameOverIfNeeded(state) {
+  if (!state || state.game_over) {
+    return;
+  }
+
+  const playerA = getPlayer(state, C.SEAT_A);
+  const playerB = getPlayer(state, C.SEAT_B);
+
+  if (!playerA || !playerB) {
+    return;
+  }
+
+  const aDead = Number(playerA.hp || 0) <= 0;
+  const bDead = Number(playerB.hp || 0) <= 0;
+
+  if (aDead && bDead) {
+    state.game_over = true;
+    state.winner_seat = "";
+    state.loser_seat = "";
+    state.turn_timer_active = false;
+    state.turn_timer_timeout_handled = true;
+    state.turn_time_left = 0.0;
+    addLog(state, "Draw.");
+    return;
+  }
+
+  if (aDead) {
+    state.game_over = true;
+    state.winner_seat = C.SEAT_B;
+    state.loser_seat = C.SEAT_A;
+    state.turn_timer_active = false;
+    state.turn_timer_timeout_handled = true;
+    state.turn_time_left = 0.0;
+    addLog(state, `${playerB.name || "Player2"} wins.`);
+    return;
+  }
+
+  if (bDead) {
+    state.game_over = true;
+    state.winner_seat = C.SEAT_A;
+    state.loser_seat = C.SEAT_B;
+    state.turn_timer_active = false;
+    state.turn_timer_timeout_handled = true;
+    state.turn_time_left = 0.0;
+    addLog(state, `${playerA.name || "Player1"} wins.`);
+  }
+}
+
+function applyDamageToUnit(unit, amount) {
+  if (!unit) {
+    return 0;
+  }
+
+  if (isInvincible(unit)) {
+    return 0;
+  }
+
+  let remaining = Math.max(0, Number(amount || 0));
+  let actualDamage = 0;
+
+  const armor = Math.max(0, Number(unit.armor || 0));
+
+  if (armor > 0 && remaining > 0) {
+    const blocked = Math.min(armor, remaining);
+    unit.armor = armor - blocked;
+    remaining -= blocked;
+  }
+
+  if (remaining > 0) {
+    unit.hp = Number(unit.hp || 0) - remaining;
+    actualDamage += remaining;
+  }
+
+  return actualDamage;
+}
+
+function damageUnit(state, ownerSeat, unitOrIndex, amount, ctx = {}) {
+  normalizeStateSoft(state);
+
+  const player = getPlayer(state, ownerSeat);
+  if (!player) {
+    return 0;
+  }
+
+  const index = getUnitIndex(player, unitOrIndex);
+  if (index < 0) {
+    return 0;
+  }
+
+  const unit = player.board[index];
+  if (!unit) {
+    return 0;
+  }
+
+  const actualDamage = applyDamageToUnit(unit, amount);
+
+  if (actualDamage > 0) {
+    const Triggers = lazyTriggers();
+
+    if (Triggers && typeof Triggers.resolveOnAllyUnitDamagedTriggers === "function") {
+      Triggers.resolveOnAllyUnitDamagedTriggers(state, ownerSeat, unit, actualDamage, ctx);
+    }
+  }
+
+  if (isDeadUnit(unit)) {
+    queueDeath(state, ownerSeat, unit);
+  }
+
+  markGameOverIfNeeded(state);
+  return actualDamage;
+}
+
+function damagePlayer(state, ownerSeat, amount) {
+  normalizeStateSoft(state);
+
+  const player = getPlayer(state, ownerSeat);
+  if (!player) {
+    return 0;
+  }
+
+  const damage = Math.max(0, Number(amount || 0));
+  player.hp = Number(player.hp || 0) - damage;
+
+  markGameOverIfNeeded(state);
+  return damage;
+}
+
+function healUnit(state, ownerSeat, unitOrIndex, amount) {
+  normalizeStateSoft(state);
+
+  const unit = getUnit(state, ownerSeat, unitOrIndex);
+  if (!unit) {
+    return 0;
+  }
+
+  const before = Number(unit.hp || 0);
+  const maxHp = Number(unit.max_hp || before);
+  unit.hp = Math.min(maxHp, before + Math.max(0, Number(amount || 0)));
+
+  return unit.hp - before;
+}
+
+function healPlayer(state, ownerSeat, amount) {
+  normalizeStateSoft(state);
+
+  const player = getPlayer(state, ownerSeat);
+  if (!player) {
+    return 0;
+  }
+
+  const before = Number(player.hp || 0);
+  const maxHp = Number(player.max_hp || before);
+  player.hp = Math.min(maxHp, before + Math.max(0, Number(amount || 0)));
+
+  return player.hp - before;
+}
+
+function queueDeath(state, ownerSeat, unitOrIndex) {
+  normalizeStateSoft(state);
+
+  const player = getPlayer(state, ownerSeat);
+  if (!player) {
+    return false;
+  }
+
+  const index = getUnitIndex(player, unitOrIndex);
+  if (index < 0) {
+    return false;
+  }
+
+  const unit = player.board[index];
+  if (!unit || isInvincible(unit)) {
+    return false;
+  }
+
+  if (!Array.isArray(state.pending_deaths)) {
+    state.pending_deaths = [];
+  }
+
+  const alreadyQueued = state.pending_deaths.some((entry) => {
+    return entry && entry.owner_seat === ownerSeat && entry.card === unit;
+  });
+
+  if (!alreadyQueued) {
+    state.pending_deaths.push({
+      owner_seat: ownerSeat,
+      seat: ownerSeat,
+      board_index: index,
+      card: unit
+    });
+  }
+
+  return true;
+}
+
+function destroyUnit(state, ownerSeat, unitOrIndex, ctx = {}) {
+  normalizeStateSoft(state);
+
+  const player = getPlayer(state, ownerSeat);
+  if (!player) {
+    return false;
+  }
+
+  const index = getUnitIndex(player, unitOrIndex);
+  if (index < 0) {
+    return false;
+  }
+
+  const unit = player.board[index];
+  if (!unit || isInvincible(unit)) {
+    return false;
+  }
+
+  unit.hp = 0;
+  queueDeath(state, ownerSeat, unit);
+  processDeathQueue(state, ctx);
+
+  return true;
+}
+
+function processDeathQueue(state, ctx = {}) {
+  normalizeStateSoft(state);
+
+  if (!state || state.game_over) {
+    return {
+      ok: true,
+      state,
+      destroyed: []
+    };
+  }
+
+  const destroyed = [];
+  const Triggers = lazyTriggers();
+
+  let safety = 0;
+  let foundDeath = true;
+
+  while (foundDeath && safety < 20) {
+    safety++;
+    foundDeath = false;
+
+    for (const seat of [C.SEAT_A, C.SEAT_B]) {
+      const player = getPlayer(state, seat);
+      if (!player || !Array.isArray(player.board)) {
+        continue;
+      }
+
+      for (let i = player.board.length - 1; i >= 0; i--) {
+        const unit = player.board[i];
+
+        if (!unit || !isDeadUnit(unit)) {
+          continue;
+        }
+
+        foundDeath = true;
+
+        const removed = player.board.splice(i, 1)[0];
+        player.graveyard.push(removed);
+
+        destroyed.push({
+          owner_seat: seat,
+          seat,
+          board_index: i,
+          card: removed
+        });
+
+        if (Triggers && typeof Triggers.resolveWhenDestroyedAbilities === "function") {
+          Triggers.resolveWhenDestroyedAbilities(state, seat, removed, ctx);
+        }
+      }
+    }
+  }
+
+  state.pending_deaths = [];
+
+  markGameOverIfNeeded(state);
+  syncState(state);
+
+  return {
+    ok: true,
+    state,
+    destroyed
+  };
+}
+
+function dealDamageToAllEnemyUnitsForPlayer(state, sourceSeat, amount, ctx = {}) {
+  normalizeStateSoft(state);
+
+  const enemySeat = getOpponentSeat(sourceSeat);
+  const enemy = getPlayer(state, enemySeat);
+
+  if (!enemy || !Array.isArray(enemy.board)) {
+    return 0;
+  }
+
+  let hitCount = 0;
+  const snapshot = enemy.board.slice();
+
+  for (const unit of snapshot) {
+    if (!unit || !enemy.board.includes(unit)) {
+      continue;
+    }
+
+    const actual = damageUnit(state, enemySeat, unit, amount, ctx);
+    if (actual > 0) {
+      hitCount++;
+    }
+  }
+
+  processDeathQueue(state, ctx);
+  return hitCount;
+}
+
+function dealDamageToAllUnits(state, amount, ctx = {}) {
+  normalizeStateSoft(state);
+
+  let hitCount = 0;
+
+  for (const seat of [C.SEAT_A, C.SEAT_B]) {
+    const player = getPlayer(state, seat);
+    if (!player || !Array.isArray(player.board)) {
+      continue;
+    }
+
+    const snapshot = player.board.slice();
+
+    for (const unit of snapshot) {
+      if (!unit || !player.board.includes(unit)) {
+        continue;
+      }
+
+      const actual = damageUnit(state, seat, unit, amount, ctx);
+      if (actual > 0) {
+        hitCount++;
+      }
+    }
+  }
+
+  processDeathQueue(state, ctx);
+  return hitCount;
+}
+
+function applySummonState(card, owner = null) {
+  if (!card) {
+    return card;
+  }
+
+  card.summoned_this_turn = true;
+  card.has_attacked_this_turn = false;
+  card.attacks_this_turn = 0;
+
+  if (!card.once_per_turn_flags || typeof card.once_per_turn_flags !== "object") {
+    card.once_per_turn_flags = {};
+  }
+
+  const hasHaste = U.hasKeyword
+    ? U.hasKeyword(card, C.KEYWORD_HASTE || "haste") || U.hasKeyword(card, "haste")
+    : Array.isArray(card.keywords) && card.keywords.includes("haste");
+
+  const hasRush = U.hasKeyword
+    ? U.hasKeyword(card, C.KEYWORD_RUSH || "rush") || U.hasKeyword(card, "rush")
+    : Array.isArray(card.keywords) && card.keywords.includes("rush");
+
+  const hasImmobile = U.hasKeyword
+    ? U.hasKeyword(card, C.KEYWORD_IMMOBILE || "immobile") || U.hasKeyword(card, "immobile")
+    : Array.isArray(card.keywords) && card.keywords.includes("immobile");
+
+  if (hasImmobile) {
+    card.can_attack = false;
+    card.exhausted = true;
+    return card;
+  }
+
+  if (hasHaste || hasRush) {
+    card.can_attack = true;
+    card.exhausted = false;
+    return card;
+  }
+
+  card.can_attack = false;
+  card.exhausted = true;
+
+  if (owner && U.refreshAttackPermissionsForPlayer) {
+    U.refreshAttackPermissionsForPlayer(owner);
+  }
+
+  return card;
+}
+
+function summonCard(state, ownerSeat, cardId, amount = 1, ctx = {}, mutateNewCard = null) {
+  normalizeStateSoft(state);
+
+  const owner = getPlayer(state, ownerSeat);
+  const context = getCtx(ctx);
+
+  if (!owner || !cardId) {
+    return 0;
+  }
+
+  if (!Array.isArray(owner.board)) {
+    owner.board = [];
+  }
+
+  if (!Array.isArray(owner.graveyard)) {
+    owner.graveyard = [];
+  }
+
+  if (typeof context.makeCardFromId !== "function") {
+    addLog(state, `makeCardFromId is missing. Cannot summon ${cardId}.`);
+    return 0;
+  }
+
+  let summoned = 0;
+  const count = Math.max(0, Number(amount || 0));
+
+  for (let i = 0; i < count; i++) {
+    if (owner.board.length >= C.MAX_BOARD_SIZE) {
+      break;
+    }
+
+    const card = context.makeCardFromId(String(cardId));
+
+    if (!card || typeof card !== "object") {
+      continue;
+    }
+
+    if (S && typeof S.normalizeCard === "function") {
+      S.normalizeCard(card);
+    }
+
+    if (typeof mutateNewCard === "function") {
+      mutateNewCard(card);
+    }
+
+    applySummonState(card, owner);
+    owner.board.push(card);
+    summoned++;
+  }
+
+  if (U.refreshAttackPermissionsForPlayer) {
+    U.refreshAttackPermissionsForPlayer(owner);
+  }
+
+  syncState(state);
+  return summoned;
+}
+
+function canAttack(state, attackerSeat, attacker, targetType = "unit") {
+  normalizeStateSoft(state);
+
+  if (!state || state.game_over) {
+    return {
+      ok: false,
+      message: "Game is already over."
+    };
+  }
+
+  if (state.turn_seat && state.turn_seat !== attackerSeat) {
+    return {
+      ok: false,
+      message: "Not your turn."
+    };
+  }
+
+  const owner = getPlayer(state, attackerSeat);
+  if (!owner || !attacker || !Array.isArray(owner.board) || !owner.board.includes(attacker)) {
+    return {
+      ok: false,
+      message: "Attacker is missing."
+    };
+  }
+
+  if (!U.isUnit(attacker)) {
+    return {
+      ok: false,
+      message: "Only units can attack."
+    };
+  }
+
+  if (hasKeyword(attacker, C.KEYWORD_IMMOBILE || "immobile") || hasKeyword(attacker, "immobile")) {
+    return {
+      ok: false,
+      message: "This unit is immobile."
+    };
+  }
+
+  if (!attacker.can_attack || attacker.exhausted) {
+    return {
+      ok: false,
+      message: "This unit cannot attack."
+    };
+  }
+
+  if (Number(attacker.attacks_this_turn || 0) >= Number(attacker.max_attacks_per_turn || 1)) {
+    return {
+      ok: false,
+      message: "This unit has already attacked enough times."
+    };
+  }
+
+  if (targetType === "player") {
+    if (attacker.cannot_attack_leader) {
+      return {
+        ok: false,
+        message: "This unit cannot attack leader."
+      };
+    }
+
+    const hasRush = U.hasKeyword
+      ? U.hasKeyword(attacker, C.KEYWORD_RUSH || "rush") || U.hasKeyword(attacker, "rush")
+      : Array.isArray(attacker.keywords) && attacker.keywords.includes("rush");
+
+    const hasHaste = U.hasKeyword
+      ? U.hasKeyword(attacker, C.KEYWORD_HASTE || "haste") || U.hasKeyword(attacker, "haste")
+      : Array.isArray(attacker.keywords) && attacker.keywords.includes("haste");
+
+    if (hasRush && attacker.summoned_this_turn && !hasHaste) {
+      return {
+        ok: false,
+        message: "Rush units cannot attack leader on the turn they are summoned."
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    message: "ok"
+  };
+}
+
+function spendAttack(attacker) {
+  if (!attacker) {
+    return;
+  }
+
+  attacker.attacks_this_turn = Number(attacker.attacks_this_turn || 0) + 1;
+  attacker.has_attacked_this_turn = true;
+
+  if (Number(attacker.attacks_this_turn || 0) >= Number(attacker.max_attacks_per_turn || 1)) {
+    attacker.can_attack = false;
+    attacker.exhausted = true;
+  } else {
+    attacker.can_attack = true;
+    attacker.exhausted = false;
+  }
+}
+
+function hasTauntBlocking(defenderPlayer, targetUnit = null) {
+  if (!defenderPlayer || !Array.isArray(defenderPlayer.board)) {
+    return false;
+  }
+
+  const taunts = defenderPlayer.board.filter((unit) => {
+    return unit && (
+      (U.isTauntUnit && U.isTauntUnit(defenderPlayer, defenderPlayer.board.indexOf(unit))) ||
+      (U.hasKeyword && (U.hasKeyword(unit, C.KEYWORD_TAUNT || "taunt") || U.hasKeyword(unit, "taunt"))) ||
+      (Array.isArray(unit.keywords) && unit.keywords.includes("taunt"))
+    );
+  });
+
+  if (taunts.length <= 0) {
+    return false;
+  }
+
+  if (!targetUnit) {
+    return true;
+  }
+
+  return !taunts.includes(targetUnit);
+}
+
+function attackFace(state, attackerSeat, attackerIndex, defenderSeat, ctx = {}) {
+  normalizeStateSoft(state);
+
+  const attackerOwner = getPlayer(state, attackerSeat);
+  const defenderOwner = getPlayer(state, defenderSeat);
+
+  if (!attackerOwner || !defenderOwner) {
+    return {
+      ok: false,
+      state,
+      message: "Invalid attacker or defender."
+    };
+  }
+
+  const attacker = getUnit(state, attackerSeat, Number(attackerIndex));
+
+  const can = canAttack(state, attackerSeat, attacker, "player");
+  if (!can.ok) {
+    return {
+      ok: false,
+      state,
+      message: can.message
+    };
+  }
+
+  if (attackerSeat === defenderSeat) {
+    return {
+      ok: false,
+      state,
+      message: "Cannot attack own leader."
+    };
+  }
+
+  if (hasTauntBlocking(defenderOwner, null)) {
+    return {
+      ok: false,
+      state,
+      message: "Enemy taunt unit must be attacked first."
+    };
+  }
+
+  const Triggers = lazyTriggers();
+
+  if (Triggers && typeof Triggers.resolveOnAllyUnitAttackTriggers === "function") {
+    Triggers.resolveOnAllyUnitAttackTriggers(state, attackerSeat, attacker, ctx);
+  }
+
+  const damage = Math.max(0, Number(attacker.attack || 0));
+  damagePlayer(state, defenderSeat, damage);
+  spendAttack(attacker);
+
+  addLog(state, `${U.cardName(attacker)} attacked enemy leader for ${damage}.`);
+
+  processDeathQueue(state, ctx);
+  markGameOverIfNeeded(state);
+  syncState(state);
+
+  return {
+    ok: true,
+    state
+  };
+}
+
+function attackUnit(state, attackerSeat, attackerIndex, defenderSeat, defenderIndex, ctx = {}) {
+  normalizeStateSoft(state);
+
+  const attackerOwner = getPlayer(state, attackerSeat);
+  const defenderOwner = getPlayer(state, defenderSeat);
+
+  if (!attackerOwner || !defenderOwner) {
+    return {
+      ok: false,
+      state,
+      message: "Invalid attacker or defender."
+    };
+  }
+
+  const attacker = getUnit(state, attackerSeat, Number(attackerIndex));
+  const defender = getUnit(state, defenderSeat, Number(defenderIndex));
+
+  const can = canAttack(state, attackerSeat, attacker, "unit");
+  if (!can.ok) {
+    return {
+      ok: false,
+      state,
+      message: can.message
+    };
+  }
+
+  if (!defender) {
+    return {
+      ok: false,
+      state,
+      message: "Target unit is missing."
+    };
+  }
+
+  if (attackerSeat === defenderSeat) {
+    return {
+      ok: false,
+      state,
+      message: "Cannot attack own unit."
+    };
+  }
+
+  if (hasTauntBlocking(defenderOwner, defender)) {
+    return {
+      ok: false,
+      state,
+      message: "Enemy taunt unit must be attacked first."
+    };
+  }
+
+  const Triggers = lazyTriggers();
+
+  if (Triggers && typeof Triggers.resolveOnAllyUnitAttackTriggers === "function") {
+    Triggers.resolveOnAllyUnitAttackTriggers(state, attackerSeat, attacker, ctx);
+  }
+
+  if (Triggers && typeof Triggers.resolveWhenAttackedAbilities === "function") {
+    Triggers.resolveWhenAttackedAbilities(state, defenderSeat, defender, attackerSeat, attacker, ctx);
+  }
+
+  const attackerDamage = Math.max(0, Number(attacker.attack || 0));
+  const defenderDamage = Math.max(0, Number(defender.attack || 0));
+
+  const attackerDeadly =
+    (U.hasKeyword && (U.hasKeyword(attacker, C.KEYWORD_DEADLY || "deadly") || U.hasKeyword(attacker, "deadly"))) ||
+    (Array.isArray(attacker.keywords) && attacker.keywords.includes("deadly"));
+
+  const defenderDeadly =
+    (U.hasKeyword && (U.hasKeyword(defender, C.KEYWORD_DEADLY || "deadly") || U.hasKeyword(defender, "deadly"))) ||
+    (Array.isArray(defender.keywords) && defender.keywords.includes("deadly"));
+
+  if (attackerDeadly && attackerDamage > 0) {
+    defender.hp = 0;
+    queueDeath(state, defenderSeat, defender);
+  } else {
+    damageUnit(state, defenderSeat, defender, attackerDamage, ctx);
+  }
+
+  if (defenderDeadly && defenderDamage > 0) {
+    attacker.hp = 0;
+    queueDeath(state, attackerSeat, attacker);
+  } else {
+    damageUnit(state, attackerSeat, attacker, defenderDamage, ctx);
+  }
+
+  const attackerRicochet =
+    (U.hasKeyword && (U.hasKeyword(attacker, C.KEYWORD_RICOCHET || "ricochet") || U.hasKeyword(attacker, "ricochet"))) ||
+    (Array.isArray(attacker.keywords) && attacker.keywords.includes("ricochet"));
+
+  if (attackerRicochet && attackerDamage > 0) {
+    damagePlayer(state, defenderSeat, attackerDamage);
+  }
+
+  spendAttack(attacker);
+
+  const defenderWillDie = isDeadUnit(defender);
+  const attackerWillSurvive = !isDeadUnit(attacker);
+
+  processDeathQueue(state, ctx);
+
+  if (
+    defenderWillDie &&
+    attackerWillSurvive &&
+    Triggers &&
+    typeof Triggers.resolveWhenKillsAbilities === "function"
+  ) {
+    Triggers.resolveWhenKillsAbilities(state, attackerSeat, attacker, ctx);
+    processDeathQueue(state, ctx);
+  }
+
+  addLog(state, `${U.cardName(attacker)} attacked ${U.cardName(defender)}.`);
+
+  markGameOverIfNeeded(state);
+  syncState(state);
+
+  return {
+    ok: true,
+    state
+  };
+}
+
+function canUnitAttackEnemyPlayerForUI(state, attackerSeat, attacker) {
+  if (!state || !attacker) {
+    return false;
+  }
+
+  const can = canAttack(state, attackerSeat, attacker, "player");
+  if (!can.ok) {
+    return false;
+  }
+
+  const defender = getPlayer(state, U.otherSeat(attackerSeat));
+  if (hasTauntBlocking(defender, null)) {
+    return false;
+  }
+
+  return true;
+}
+
+function hasValidEnemyUnitAttackTarget(state, attackerSeat) {
+  const enemy = getPlayer(state, U.otherSeat(attackerSeat));
   if (!enemy || !Array.isArray(enemy.board)) {
     return false;
   }
 
-  for (const unit of enemy.board) {
-    if (!unit || !U.isUnit(unit)) continue;
+  if (enemy.board.length <= 0) {
+    return false;
+  }
 
-    if (!canSpellAffectUnit(state, sourceSeat, card, enemySeat, unit)) {
-      continue;
-    }
-
+  if (U.hasTauntUnit && U.hasTauntUnit(enemy)) {
     return true;
   }
 
-  return false;
+  return enemy.board.some((unit) => !!unit);
 }
 
-function hasValidPlayTargetForCard(state, sourceSeat, card) {
-  if (!state || !card) {
+function hasAnyValidAttackTargetForUnit(state, attackerSeat, attacker) {
+  if (!attacker) {
     return false;
   }
 
-  const targetType = String(card.target_type || C.TARGET_NONE);
-  const effectId = String(card.effect_id || "");
-
-  if (targetType === C.TARGET_NONE || targetType === "") {
+  if (hasValidEnemyUnitAttackTarget(state, attackerSeat)) {
     return true;
   }
 
-  if (targetType === C.TARGET_FRIENDLY_PLAYER) {
-    return U.getPlayer(state, sourceSeat) !== null;
-  }
-
-  if (targetType === C.TARGET_ENEMY_PLAYER) {
-    return U.getPlayer(state, U.otherSeat(sourceSeat)) !== null;
-  }
-
-  if (targetType === C.TARGET_ENEMY_UNIT) {
-    return hasValidEnemyUnitTargetForSpell(state, sourceSeat, card);
-  }
-
-  if (targetType === C.TARGET_FRIENDLY_UNIT) {
-    return hasValidFriendlyUnitTargetForSpell(state, sourceSeat, card);
-  }
-
-  if (targetType === C.TARGET_ANY_FRIENDLY) {
-    if (
-      effectId === C.EFFECT_ADD_KEYWORD ||
-      effectId === C.EFFECT_DESTROY_FRIENDLY_TRAIT_UNIT_COPY_TO_HAND_BUFF ||
-      effectId === C.EFFECT_POETRY_OF_RESILIENCE ||
-      effectId === C.EFFECT_NOBLES_OBLIGE ||
-      effectId === C.EFFECT_FORBIDDEN_BOOK
-    ) {
-      return hasValidFriendlyUnitTargetForSpell(state, sourceSeat, card);
-    }
-
-    return U.getPlayer(state, sourceSeat) !== null;
-  }
-
-  if (targetType === C.TARGET_ANY_ENEMY) {
-    if (U.getPlayer(state, U.otherSeat(sourceSeat)) !== null) {
-      return true;
-    }
-
-    return hasValidEnemyUnitTargetForSpell(state, sourceSeat, card);
-  }
-
-  if (targetType === C.TARGET_ANY_UNIT) {
-    return hasValidAnyUnitTargetForSpell(state, sourceSeat, card);
-  }
-
-  if (targetType === C.TARGET_ANY || targetType === C.ABILITY_TARGET_ANY) {
-    return true;
-  }
-
-  return true;
-}
-
-function isValidTargetForPendingSpell(state, sourceSeat, targetOwnerSeat, targetKind) {
-  if (!state) return false;
-
-  const card = state.pending_card;
-  if (!card) return false;
-
-  const effectId = String(card.effect_id || "");
-  const targetType = String(card.target_type || C.TARGET_NONE);
-
-  const isFriendly = targetOwnerSeat === sourceSeat;
-  const isEnemy = targetOwnerSeat !== sourceSeat;
-
-  if (effectId === C.EFFECT_DESTROY_FRIENDLY_TRAIT_UNIT_COPY_TO_HAND_BUFF) {
-    return isFriendly && targetKind === "unit";
-  }
-
-  if (effectId === C.EFFECT_POETRY_OF_RESILIENCE) {
-    return isFriendly && targetKind === "unit";
-  }
-
-  if (effectId === C.EFFECT_NOBLES_OBLIGE) {
-    return isFriendly && targetKind === "unit";
-  }
-
-  if (effectId === C.EFFECT_FORBIDDEN_BOOK) {
-    return isFriendly && targetKind === "unit";
-  }
-
-  if (effectId === C.EFFECT_RUNIC_TUNING) {
-    return isFriendly && targetKind === "unit";
-  }
-
-  if (effectId === C.EFFECT_LAMENTATION_OF_LIFE) {
-    return isEnemy && targetKind === "unit";
-  }
-
-  if (effectId === C.EFFECT_TRANSCRIBE_OF_THE_WICKED) {
-    return isEnemy && targetKind === "unit";
-  }
-
-  switch (targetType) {
-    case C.TARGET_ANY_ENEMY:
-      return isEnemy;
-
-    case C.TARGET_ANY_FRIENDLY:
-      return isFriendly;
-
-    case C.TARGET_ENEMY_UNIT:
-      return isEnemy && targetKind === "unit";
-
-    case C.TARGET_FRIENDLY_UNIT:
-      return isFriendly && targetKind === "unit";
-
-    case C.TARGET_ANY_UNIT:
-      return targetKind === "unit";
-
-    case C.TARGET_FRIENDLY_PLAYER:
-      return isFriendly && targetKind === "player";
-
-    case C.TARGET_ENEMY_PLAYER:
-      return isEnemy && targetKind === "player";
-
-    case C.TARGET_ANY_PLAYER:
-      return targetKind === "player";
-
-    case C.TARGET_NONE:
-      return false;
-
-    default:
-      return false;
-  }
-}
-
-function isValidTargetForPendingAbility(state, sourceSeat, targetOwnerSeat, targetKind) {
-  if (!state) return false;
-
-  const ability = state.pending_ability || {};
-  if (!ability || typeof ability !== "object") return false;
-
-  const targetType = String(ability.target || "");
-  const isFriendly = targetOwnerSeat === sourceSeat;
-  const isEnemy = targetOwnerSeat !== sourceSeat;
-
-  switch (targetType) {
-    case C.ABILITY_TARGET_ANY:
-      return true;
-
-    case C.ABILITY_TARGET_ANY_ENEMY:
-      return isEnemy;
-
-    case C.ABILITY_TARGET_ANY_FRIENDLY:
-      return isFriendly;
-
-    case C.ABILITY_TARGET_ENEMY_PLAYER:
-      return isEnemy && targetKind === "player";
-
-    case C.ABILITY_TARGET_FRIENDLY_PLAYER:
-      return isFriendly && targetKind === "player";
-
-    case C.ABILITY_TARGET_ENEMY_UNIT:
-      return isEnemy && targetKind === "unit";
-
-    case C.ABILITY_TARGET_FRIENDLY_UNIT:
-      return isFriendly && targetKind === "unit";
-
-    case C.ABILITY_TARGET_ANY_UNIT:
-      return targetKind === "unit";
-
-    case C.ABILITY_TARGET_ANY_PLAYER:
-      return targetKind === "player";
-
-    default:
-      return false;
-  }
-}
-
-function isValidTargetForCard(state, sourceSeat, card, target) {
-  if (!state || !card) {
-    return { ok: false, message: "Card is missing." };
-  }
-
-  const targetType = String(card.target_type || C.TARGET_NONE);
-
-  if (targetType === C.TARGET_NONE || targetType === "") {
-    return { ok: true, message: "ok" };
-  }
-
-  if (!target) {
-    return { ok: false, message: "Target is missing." };
-  }
-
-  const targetSeat = target.owner_seat;
-  const targetKind = target.type === "player" ? "player" : "unit";
-
-  if (!targetSeat) {
-    return { ok: false, message: "Target owner is missing." };
-  }
-
-  if (!isValidTargetForPendingCardLike(state, sourceSeat, card, targetSeat, targetKind)) {
-    return { ok: false, message: "Invalid target for this card." };
-  }
-
-  if (target.type === "unit") {
-    const unit = getUnitByTarget(state, target);
-    if (!unit) {
-      return { ok: false, message: "Target unit is missing." };
-    }
-
-    if (!canSpellAffectUnit(state, sourceSeat, card, targetSeat, unit)) {
-      return { ok: false, message: "Target unit cannot be affected." };
-    }
-  }
-
-  return { ok: true, message: "ok" };
-}
-
-function isValidTargetForPendingCardLike(state, sourceSeat, card, targetOwnerSeat, targetKind) {
-  const previousPending = state.pending_card;
-  state.pending_card = card;
-
-  const ok = isValidTargetForPendingSpell(state, sourceSeat, targetOwnerSeat, targetKind);
-
-  state.pending_card = previousPending;
-
-  return ok;
-}
-
-function isBoardTargetableNow(state, sourceSeat, ownerSeat, boardIndex) {
-  if (!state) return false;
-
-  const targetPlayer = U.getPlayer(state, ownerSeat);
-  if (!targetPlayer || !Array.isArray(targetPlayer.board)) {
-    return false;
-  }
-
-  const index = Number(boardIndex);
-  if (index < 0 || index >= targetPlayer.board.length) {
-    return false;
-  }
-
-  const currentOwnerSeat = sourceSeat;
-
-  if (state.selecting_target) {
-    switch (state.pending_action_type) {
-      case C.ACTION_SPELL: {
-        const targetUnit = targetPlayer.board[index];
-
-        if (U.isUntrickableUnit(targetPlayer, targetUnit)) {
-          return false;
-        }
-
-        const pendingCard = state.pending_card;
-        if (
-          pendingCard &&
-          (
-            String(pendingCard.effect_id || "") === C.EFFECT_ADD_KEYWORD ||
-            String(pendingCard.effect_id || "") === C.EFFECT_DESTROY_FRIENDLY_TRAIT_UNIT_COPY_TO_HAND_BUFF ||
-            String(pendingCard.effect_id || "") === C.EFFECT_POETRY_OF_RESILIENCE
-          )
-        ) {
-          if (!spellCanTargetUnitByAbilityFilter(state, sourceSeat, pendingCard, targetUnit)) {
-            return false;
-          }
-        }
-
-        return isValidTargetForPendingSpell(state, sourceSeat, ownerSeat, "unit");
-      }
-
-      case C.ACTION_ABILITY:
-        return isValidTargetForPendingAbility(state, sourceSeat, ownerSeat, "unit");
-
-      case C.ACTION_UNIT_ATTACK:
-        if (ownerSeat === currentOwnerSeat) {
-          return false;
-        }
-
-        if (
-          Number(state.pending_attacker_index ?? -1) < 0 ||
-          Number(state.pending_attacker_index ?? -1) >= U.getPlayer(state, currentOwnerSeat).board.length
-        ) {
-          return false;
-        }
-
-        if (U.hasTauntUnit(targetPlayer) && !U.isTauntUnit(targetPlayer, index)) {
-          return false;
-        }
-
-        return true;
-
-      default:
-        return false;
-    }
-  }
-
-  if (Number(state.selected_attacker_index ?? -1) !== -1) {
-    const selectedOwnerSeat = U.normalizeOwnerToSeat(state, state.selected_attacker_owner);
-
-    if (selectedOwnerSeat !== currentOwnerSeat) {
-      return false;
-    }
-
-    if (ownerSeat === currentOwnerSeat) {
-      return false;
-    }
-
-    if (U.hasTauntUnit(targetPlayer) && !U.isTauntUnit(targetPlayer, index)) {
-      return false;
-    }
-
-    return true;
-  }
-
-  return false;
-}
-
-function isFaceTargetableNow(state, sourceSeat, ownerSeat) {
-  if (!state) return false;
-
-  const clickedPlayer = U.getPlayer(state, ownerSeat);
-  if (!clickedPlayer) {
-    return false;
-  }
-
-  const currentOwnerSeat = sourceSeat;
-
-  if (state.selecting_target) {
-    switch (state.pending_action_type) {
-      case C.ACTION_SPELL:
-        if (state.pending_card && String(state.pending_card.effect_id || "") === C.EFFECT_ADD_KEYWORD) {
-          return false;
-        }
-
-        return isValidTargetForPendingSpell(state, sourceSeat, ownerSeat, "player");
-
-      case C.ACTION_ABILITY:
-        return isValidTargetForPendingAbility(state, sourceSeat, ownerSeat, "player");
-
-      case C.ACTION_UNIT_ATTACK: {
-        if (ownerSeat === currentOwnerSeat) {
-          return false;
-        }
-
-        const player = U.getPlayer(state, currentOwnerSeat);
-        const attackerIndex = Number(state.pending_attacker_index ?? -1);
-
-        if (!player || attackerIndex < 0 || attackerIndex >= player.board.length) {
-          return false;
-        }
-
-        const attacker = player.board[attackerIndex];
-        return canUnitAttackEnemyPlayerForUI(state, currentOwnerSeat, attacker);
-      }
-
-      default:
-        return false;
-    }
-  }
-
-  if (Number(state.selected_attacker_index ?? -1) !== -1) {
-    const selectedOwnerSeat = U.normalizeOwnerToSeat(state, state.selected_attacker_owner);
-
-    if (selectedOwnerSeat !== currentOwnerSeat) {
-      return false;
-    }
-
-    if (ownerSeat === currentOwnerSeat) {
-      return false;
-    }
-
-    const player = U.getPlayer(state, currentOwnerSeat);
-    const attackerIndex = Number(state.selected_attacker_index ?? -1);
-
-    if (!player || attackerIndex < 0 || attackerIndex >= player.board.length) {
-      return false;
-    }
-
-    const attacker = player.board[attackerIndex];
-    return canUnitAttackEnemyPlayerForUI(state, currentOwnerSeat, attacker);
-  }
-
-  return false;
-}
-
-function canUnitAttackEnemyPlayerForUI(state, attackerSeat, attacker) {
-  if (!state || !attacker) return false;
-
-  if (attacker.cannot_attack_leader) {
-    return false;
-  }
-
-  if (!U.isUnit(attacker)) {
-    return false;
-  }
-
-  const attackerOwner = U.getPlayer(state, attackerSeat);
-  if (!U.canUnitAttackNowWithAura(attackerOwner, attacker, true)) {
-    return false;
-  }
-
-  const defenderOwner = U.getPlayer(state, U.otherSeat(attackerSeat));
-  if (U.hasTauntUnit(defenderOwner)) {
-    return false;
-  }
-
-  return true;
+  return canUnitAttackEnemyPlayerForUI(state, attackerSeat, attacker);
 }
 
 module.exports = {
-  getTargetFromPayload,
-  getUnitByTarget,
-  getPlayerByTarget,
-  getTargetOwner,
-  getTargetOwnerId,
+  damagePlayer,
+  damageUnit,
+  healPlayer,
+  healUnit,
 
-  isFriendlyTarget,
-  isEnemyTarget,
+  destroyUnit,
+  queueDeath,
+  processDeathQueue,
 
-  spellCanTargetUnitByAbilityFilter,
-  canSpellAffectUnit,
+  dealDamageToAllEnemyUnitsForPlayer,
+  dealDamageToAllUnits,
 
-  hasValidAnyUnitTargetForSpell,
-  hasValidFriendlyUnitTargetForSpell,
-  hasValidEnemyUnitTargetForSpell,
-  hasValidPlayTargetForCard,
+  summonCard,
+  applySummonState,
 
-  isValidTargetForPendingSpell,
-  isValidTargetForPendingAbility,
-  isValidTargetForCard,
+  canAttack,
+  attackFace,
+  attackUnit,
 
-  isBoardTargetableNow,
-  isFaceTargetableNow,
-  canUnitAttackEnemyPlayerForUI
+  canUnitAttackEnemyPlayerForUI,
+  hasValidEnemyUnitAttackTarget,
+  hasAnyValidAttackTargetForUnit
 };
