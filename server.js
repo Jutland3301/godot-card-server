@@ -710,6 +710,145 @@ async function handleSaveDeck(req, res) {
   }
 }
 
+async function handleRankedResult(req, res) {
+  if (!requireDb(res)) return;
+
+  const userId = getBearerUserId(req);
+
+  if (userId <= 0) {
+    sendJson(res, 401, {
+      ok: false,
+      error: "missing or invalid token"
+    });
+    return;
+  }
+
+  let body = {};
+
+  try {
+    body = await readBody(req);
+  } catch (e) {
+    sendJson(res, 400, {
+      ok: false,
+      error: e.message
+    });
+    return;
+  }
+
+  const opponentId = Number(body.opponent_id || 0);
+  const result = String(body.result || "").trim(); // "win" or "loss"
+
+  if (result !== "win" && result !== "loss") {
+    sendJson(res, 400, {
+      ok: false,
+      error: "result must be win or loss"
+    });
+    return;
+  }
+
+  const isWin = result === "win";
+  const winnerId = isWin ? userId : opponentId > 0 ? opponentId : null;
+  const loserId = isWin ? (opponentId > 0 ? opponentId : null) : userId;
+
+  try {
+    await ensureRankProfile(userId);
+
+    await pool.query(
+      `
+      UPDATE rank_profiles
+      SET wins = wins + $2,
+          losses = losses + $3,
+          rank_points = GREATEST(rank_points + $4, 0),
+          rating = GREATEST(rating + $5, 0)
+      WHERE user_id = $1
+      `,
+      [
+        userId,
+        isWin ? 1 : 0,
+        isWin ? 0 : 1,
+        isWin ? 10 : -5,
+        isWin ? 15 : -10
+      ]
+    );
+
+    const matchResult = await pool.query(
+      `
+      INSERT INTO match_logs (player1_id, player2_id, winner_id, loser_id)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, player1_id, player2_id, winner_id, loser_id, created_at
+      `,
+      [
+        userId,
+        opponentId > 0 ? opponentId : null,
+        winnerId,
+        loserId
+      ]
+    );
+
+    const profileResult = await pool.query(
+      `
+      SELECT user_id, rating, rank_points, wins, losses
+      FROM rank_profiles
+      WHERE user_id = $1
+      `,
+      [userId]
+    );
+
+    sendJson(res, 200, {
+      ok: true,
+      match: matchResult.rows[0],
+      profile: profileResult.rows[0]
+    });
+  } catch (e) {
+    console.error("ranked result error:", e);
+    sendJson(res, 500, {
+      ok: false,
+      error: "failed to save ranked result",
+      detail: e.message
+    });
+  }
+}
+
+
+async function handleRankedProfile(req, res) {
+  if (!requireDb(res)) return;
+
+  const userId = getBearerUserId(req);
+
+  if (userId <= 0) {
+    sendJson(res, 401, {
+      ok: false,
+      error: "missing or invalid token"
+    });
+    return;
+  }
+
+  try {
+    await ensureRankProfile(userId);
+
+    const result = await pool.query(
+      `
+      SELECT user_id, rating, rank_points, wins, losses
+      FROM rank_profiles
+      WHERE user_id = $1
+      `,
+      [userId]
+    );
+
+    sendJson(res, 200, {
+      ok: true,
+      profile: result.rows[0]
+    });
+  } catch (e) {
+    console.error("ranked profile error:", e);
+    sendJson(res, 500, {
+      ok: false,
+      error: "failed to load ranked profile",
+      detail: e.message
+    });
+  }
+}
+
 async function handleDbTest(req, res) {
   if (!requireDb(res)) return;
 
@@ -785,6 +924,16 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && url.pathname === "/save_deck") {
     await handleSaveDeck(req, res);
+    return;
+  }
+
+    if (req.method === "POST" && url.pathname === "/ranked/result") {
+    await handleRankedResult(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/ranked/profile") {
+    await handleRankedProfile(req, res);
     return;
   }
 
