@@ -15,6 +15,7 @@ const MAX_MANA = 10;
 const TURN_TIME_LIMIT_SECONDS = 45.0;
 const MAX_HAND_SIZE = 7;
 const MAX_BOARD_SIZE = 5;
+const MATCH_TIMER_TICK_MS = 250;
 
 const pool = DATABASE_URL
   ? new Pool({
@@ -935,7 +936,8 @@ function tryMakeMatch() {
           side: entryB.side
         }
       },
-      created_at: Date.now()
+      created_at: Date.now(),
+      last_timer_update_at: Date.now()
     };
 
     match.state = makeInitialMatchState(match);
@@ -2229,6 +2231,91 @@ function sendMatchFound(matchId, state) {
   }
 }
 
+function tickMatchTimers() {
+  const now = Date.now();
+
+  for (const [matchId, match] of matches.entries()) {
+    if (!match || !match.state) {
+      continue;
+    }
+
+    const state = match.state;
+
+    if (state.game_over) {
+      continue;
+    }
+
+    if (!state.turn_timer_active) {
+      match.last_timer_update_at = now;
+      continue;
+    }
+
+    if (state.turn_timer_timeout_handled) {
+      match.last_timer_update_at = now;
+      continue;
+    }
+
+    const last = Number(match.last_timer_update_at || now);
+    const deltaSeconds = Math.max(0, (now - last) / 1000.0);
+    match.last_timer_update_at = now;
+
+    if (deltaSeconds <= 0) {
+      continue;
+    }
+
+    state.turn_time_left = Math.max(0, Number(state.turn_time_left || 0) - deltaSeconds);
+
+    if (state.turn_time_left > 0) {
+      continue;
+    }
+
+    state.turn_time_left = 0;
+    state.turn_timer_timeout_handled = true;
+
+    console.log(
+      "[MATCH TIMER] timeout",
+      matchId,
+      "turn=",
+      state.turn_number,
+      "current=",
+      state.current_player_id || state.turn_seat
+    );
+
+    const seatId = state.turn_seat || (
+      state.current_player_id === "player2" ? "B" : "A"
+    );
+
+    const result = BattleEngine.handleBattleAction(match, seatId, {
+      action: "end_turn",
+      reason: "timeout"
+    }, {
+      makeCardFromId
+    });
+
+    if (!result || result.ok !== true) {
+      console.log(
+        "[MATCH TIMER] auto end_turn failed",
+        matchId,
+        result && (result.message || result.reason)
+          ? (result.message || result.reason)
+          : "unknown error"
+      );
+
+      state.turn_timer_active = false;
+      continue;
+    }
+
+    match.state = syncBattleEngineStateToLegacyState(match.state);
+    match.last_timer_update_at = Date.now();
+
+    broadcastMatchState(matchId, match.state);
+
+    if (match.state && match.state.game_over) {
+      destroyMatch(matchId, "Match finished by timer.");
+    }
+  }
+}
+  
 function destroyMatch(matchId, reason = "Match destroyed.") {
   const match = matches.get(matchId);
 
@@ -2592,7 +2679,7 @@ wss.on("connection", (ws, req) => {
     console.error("[CLIENT] socket error", clientId, error && error.stack ? error.stack : error);
   });
 });
-
+setInterval(tickMatchTimers, MATCH_TIMER_TICK_MS);
 server.listen(PORT, () => {
   console.log(`[SERVER] Node authoritative gateway + save API listening on port ${PORT}`);
 });
