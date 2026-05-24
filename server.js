@@ -1,3 +1,5 @@
+"use strict";
+
 const http = require("http");
 const { WebSocketServer, WebSocket } = require("ws");
 const { Pool } = require("pg");
@@ -10,11 +12,8 @@ const DATABASE_URL = process.env.DATABASE_URL || "";
 const STARTING_HP = 20;
 const STARTING_HAND_SIZE = 3;
 const STARTING_MANA = 0;
-const MANA_GAIN_PER_TURN = 1;
-const MAX_MANA = 10;
 const TURN_TIME_LIMIT_SECONDS = 45.0;
 const MAX_HAND_SIZE = 7;
-const MAX_BOARD_SIZE = 5;
 const MATCH_TIMER_TICK_MS = 250;
 
 const pool = DATABASE_URL
@@ -31,7 +30,7 @@ let nextHostNumber = 1;
 let nextMatchNumber = 1;
 
 const clients = new Map();
-const hosts = new Map(); // 互換用。Node authoritative戦闘では使わない。
+const hosts = new Map();
 const queue = [];
 const matches = new Map();
 
@@ -71,10 +70,6 @@ function safeParse(text) {
   }
 }
 
-function deepClone(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
 function sendError(ws, message) {
   safeSend(ws, {
     type: "error",
@@ -91,7 +86,7 @@ function sendActionRejected(clientId, message) {
 
   safeSend(client.ws, {
     type: "action_rejected",
-    message
+    message: String(message || "Action rejected.")
   });
 }
 
@@ -360,19 +355,17 @@ async function handleOpenPack(req, res) {
 
   const packType = String(body.pack_type || body.packType || "test");
   const count = Math.max(1, Math.min(20, Number(body.count || 5)));
-
   const availableCardIds = getAvailableCardIds();
 
   if (availableCardIds.length <= 0) {
-    sendJson(res, 400, { ok: false, error: "No cards available in CardLibrary.gd." });
+    sendJson(res, 400, { ok: false, error: "No cards available." });
     return;
   }
 
   const opened = [];
 
   for (let i = 0; i < count; i++) {
-    const index = Math.floor(Math.random() * availableCardIds.length);
-    opened.push(availableCardIds[index]);
+    opened.push(availableCardIds[Math.floor(Math.random() * availableCardIds.length)]);
   }
 
   const client = await pool.connect();
@@ -742,7 +735,7 @@ async function handleHttp(req, res) {
     if (path === "/" || path === "/health") {
       sendJson(res, 200, {
         ok: true,
-        service: "godot-card-node-authoritative-step2",
+        service: "godot-card-node-authoritative",
         db: !!pool,
         clients: clients.size,
         hosts: hosts.size,
@@ -800,7 +793,7 @@ async function handleHttp(req, res) {
 
     sendJson(res, 404, { ok: false, error: "Not found" });
   } catch (error) {
-    console.log("[HTTP ERROR]", error);
+    console.error("[HTTP ERROR]", error && error.stack ? error.stack : error);
     sendJson(res, 500, { ok: false, error: error.message });
   }
 }
@@ -809,7 +802,7 @@ const server = http.createServer(handleHttp);
 const wss = new WebSocketServer({ server });
 
 // ============================================================================
-// Node authoritative battle helpers
+// Battle state helpers
 // ============================================================================
 function removeClientFromQueue(clientId) {
   for (let i = queue.length - 1; i >= 0; i--) {
@@ -889,120 +882,6 @@ function findQueuePair() {
   return null;
 }
 
-function tryMakeMatch() {
-  while (queue.length >= 2) {
-    const pair = findQueuePair();
-
-    if (!pair) {
-      console.log("[MATCH] Waiting for compatible queue pair. queue=", queue.length);
-      return;
-    }
-
-    const entryA = pair.entryA;
-    const entryB = pair.entryB;
-
-    removeClientFromQueue(entryA.client_id);
-    removeClientFromQueue(entryB.client_id);
-
-    const clientA = clients.get(entryA.client_id);
-    const clientB = clients.get(entryB.client_id);
-
-    if (!clientA || !clientB) {
-      continue;
-    }
-
-    if (!clientA.ws || clientA.ws.readyState !== WebSocket.OPEN) {
-      continue;
-    }
-    
-    if (!clientB.ws || clientB.ws.readyState !== WebSocket.OPEN) {
-      continue;
-    }
-
-    const matchId = makeId("match", nextMatchNumber++);
-
-    const match = {
-      match_id: matchId,
-      state: {},
-      seats: {
-        A: {
-          client_id: entryA.client_id,
-          deck_data: entryA.deck_data,
-          side: entryA.side
-        },
-        B: {
-          client_id: entryB.client_id,
-          deck_data: entryB.deck_data,
-          side: entryB.side
-        }
-      },
-      created_at: Date.now(),
-      last_timer_update_at: Date.now()
-    };
-
-    match.state = makeInitialMatchState(match);
-
-    matches.set(matchId, match);
-
-    clientA.match_id = matchId;
-    clientA.seat_id = "A";
-    clientA.queued = false;
-
-    clientB.match_id = matchId;
-    clientB.seat_id = "B";
-    clientB.queued = false;
-
-    console.log(
-      "[MATCH] Created Node authoritative match",
-      matchId,
-      "A=",
-      entryA.client_id,
-      entryA.side,
-      "B=",
-      entryB.client_id,
-      entryB.side
-    );
-
-    sendMatchFound(matchId, match.state);
-  }
-}
-
-function shuffleArray(array) {
-  for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const temp = array[i];
-    array[i] = array[j];
-    array[j] = temp;
-  }
-
-  return array;
-}
-
-function makeInitialPlayerState(ownerId, deckData) {
-  const cardIds = getCardIdsFromDeckData(deckData);
-  const deck = shuffleArray(cardIds.map((cardId) => makeCardFromId(cardId)));
-
-  return {
-    owner_id: ownerId,
-    name: ownerId === "player1" ? "Player1" : "Player2",
-
-    hp: STARTING_HP,
-    max_hp: STARTING_HP,
-
-    mana: STARTING_MANA,
-    max_mana: STARTING_MANA,
-
-    deck,
-    hand: [],
-    board: [],
-    graveyard: [],
-
-    last_spell_cast: null,
-    scholar_cards_played_this_game: 0,
-    inflation_counters: 0
-  };
-}
-
 function drawOneCard(player) {
   if (!player) {
     return null;
@@ -1035,313 +914,40 @@ function drawOneCard(player) {
   return card;
 }
 
-function drawCards(player, amount) {
-  for (let i = 0; i < amount; i++) {
-    drawOneCard(player);
-  }
-}
+function makeInitialPlayerState(ownerId, deckData) {
+  const cardIds = getCardIdsFromDeckData(deckData);
+  const deck = cardIds
+    .map((cardId) => makeCardFromId(cardId))
+    .filter((card) => card && typeof card === "object");
 
-function getOwnerIdForSeat(seatId) {
-  if (seatId === "A") {
-    return "player1";
-  }
-
-  if (seatId === "B") {
-    return "player2";
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = deck[i];
+    deck[i] = deck[j];
+    deck[j] = tmp;
   }
 
-  return "";
-}
+  return {
+    owner_id: ownerId,
+    name: ownerId === "player1" ? "Player1" : "Player2",
 
-function getEnemyOwnerId(ownerId) {
-  if (ownerId === "player1") {
-    return "player2";
-  }
+    hp: STARTING_HP,
+    max_hp: STARTING_HP,
 
-  if (ownerId === "player2") {
-    return "player1";
-  }
+    mana: STARTING_MANA,
+    max_mana: STARTING_MANA,
 
-  return "";
-}
+    deck,
+    hand: [],
+    board: [],
+    graveyard: [],
 
-function getPlayerForOwnerId(state, ownerId) {
-  if (!state) {
-    return null;
-  }
-
-  if (ownerId === "player1") {
-    return state.player1 || null;
-  }
-
-  if (ownerId === "player2") {
-    return state.player2 || null;
-  }
-
-  return null;
-}
-
-function getOpponentForOwnerId(state, ownerId) {
-  return getPlayerForOwnerId(state, getEnemyOwnerId(ownerId));
-}
-
-function ensureStateCollections(state) {
-  if (!Array.isArray(state.battle_log_messages)) {
-    state.battle_log_messages = [];
-  }
-}
-
-function addBattleLog(state, message) {
-  ensureStateCollections(state);
-  const text = String(message || "");
-  state.status_message = text;
-  state.battle_log_messages.push(text);
-}
-
-function hasKeyword(card, keyword) {
-  if (!card || !Array.isArray(card.keywords)) {
-    return false;
-  }
-
-  return card.keywords.includes(keyword);
-}
-
-function addKeyword(card, keyword) {
-  if (!card) {
-    return;
-  }
-
-  if (!Array.isArray(card.keywords)) {
-    card.keywords = [];
-  }
-
-  if (!card.keywords.includes(keyword)) {
-    card.keywords.push(keyword);
-  }
-}
-
-function removeKeyword(card, keyword) {
-  if (!card || !Array.isArray(card.keywords)) {
-    return;
-  }
-
-  card.keywords = card.keywords.filter((value) => value !== keyword);
-}
-
-function hasTrait(card, trait) {
-  if (!card || !Array.isArray(card.traits)) {
-    return false;
-  }
-
-  return card.traits.includes(trait);
-}
-
-function changeStats(card, attackDelta, hpDelta) {
-  if (!card) {
-    return;
-  }
-
-  const attackChange = Number(attackDelta || 0);
-  const hpChange = Number(hpDelta || 0);
-
-  card.attack = Number(card.attack || 0) + attackChange;
-  card.hp = Number(card.hp || 0) + hpChange;
-  card.max_hp = Number(card.max_hp || 0) + hpChange;
-  card.base_attack = Number(card.base_attack || 0) + attackChange;
-  card.base_hp = Number(card.base_hp || 0) + hpChange;
-}
-
-function damageCard(card, amount) {
-  if (!card) {
-    return 0;
-  }
-
-  if (hasKeyword(card, "invincible")) {
-    return 0;
-  }
-
-  let remaining = Math.max(0, Number(amount || 0));
-  let actualDamage = 0;
-  const armor = Math.max(0, Number(card.armor || 0));
-
-  if (armor > 0 && remaining > 0) {
-    const blocked = Math.min(armor, remaining);
-    card.armor = armor - blocked;
-    remaining -= blocked;
-  }
-
-  if (remaining > 0) {
-    card.hp = Number(card.hp || 0) - remaining;
-    actualDamage += remaining;
-  }
-
-  return actualDamage;
-}
-
-function healCard(card, amount) {
-  if (!card) {
-    return 0;
-  }
-
-  const before = Number(card.hp || 0);
-  const maxHp = Number(card.max_hp || before);
-  card.hp = Math.min(maxHp, before + Math.max(0, Number(amount || 0)));
-  return card.hp - before;
-}
-
-function damagePlayer(player, amount) {
-  if (!player) {
-    return 0;
-  }
-
-  const damage = Math.max(0, Number(amount || 0));
-  player.hp = Number(player.hp || 0) - damage;
-  return damage;
-}
-
-function healPlayer(player, amount) {
-  if (!player) {
-    return 0;
-  }
-
-  const before = Number(player.hp || 0);
-  const maxHp = Number(player.max_hp || before);
-  player.hp = Math.min(maxHp, before + Math.max(0, Number(amount || 0)));
-  return player.hp - before;
-}
-
-function removeDeadUnits(state) {
-  const destroyed = [];
-
-  for (const ownerId of ["player1", "player2"]) {
-    const player = getPlayerForOwnerId(state, ownerId);
-
-    if (!player || !Array.isArray(player.board)) {
-      continue;
-    }
-
-    const survivors = [];
-
-    for (const unit of player.board) {
-      if (unit && Number(unit.hp || 0) <= 0 && !hasKeyword(unit, "invincible")) {
-        player.graveyard.push(unit);
-        destroyed.push({ ownerId, unit });
-      } else {
-        survivors.push(unit);
-      }
-    }
-
-    player.board = survivors;
-  }
-
-  return destroyed;
-}
-
-function checkGameOver(state) {
-  if (!state || state.game_over) {
-    return;
-  }
-
-  const player1 = state.player1;
-  const player2 = state.player2;
-
-  if (!player1 || !player2) {
-    return;
-  }
-
-  if (Number(player1.hp || 0) <= 0 && Number(player2.hp || 0) <= 0) {
-    state.game_over = true;
-    state.turn_timer_active = false;
-    addBattleLog(state, "Both leaders were defeated. Draw.");
-    return;
-  }
-
-  if (Number(player1.hp || 0) <= 0) {
-    state.game_over = true;
-    state.turn_timer_active = false;
-    addBattleLog(state, "Player2 wins.");
-    return;
-  }
-
-  if (Number(player2.hp || 0) <= 0) {
-    state.game_over = true;
-    state.turn_timer_active = false;
-    addBattleLog(state, "Player1 wins.");
-  }
-}
-
-function applySummonState(card) {
-  if (!card) {
-    return;
-  }
-
-  card.summoned_this_turn = true;
-  card.has_attacked_this_turn = false;
-  card.attacks_this_turn = 0;
-
-  if (hasKeyword(card, "haste") || hasKeyword(card, "rush")) {
-    card.can_attack = true;
-    card.exhausted = false;
-    return;
-  }
-
-  card.can_attack = false;
-  card.exhausted = true;
-}
-
-function startServerTurn(state) {
-  if (!state || state.game_over) {
-    return;
-  }
-
-  const currentPlayerId = String(state.current_player_id || "player1");
-  const currentPlayer = state[currentPlayerId];
-
-  if (!currentPlayer) {
-    return;
-  }
-
-  const drawn = drawOneCard(currentPlayer);
-
-  if (!drawn) {
-    state.game_over = true;
-    state.status_message = currentPlayer.name + " loses because they cannot draw a card.";
-    state.battle_log_messages.push(state.status_message);
-    state.turn_timer_active = false;
-    return;
-  }
-
-  currentPlayer.max_mana = Math.min(Number(currentPlayer.max_mana || 0) + MANA_GAIN_PER_TURN, MAX_MANA);
-  currentPlayer.mana = currentPlayer.max_mana;
-
-  if (Array.isArray(currentPlayer.board)) {
-    for (const unit of currentPlayer.board) {
-      if (!unit) {
-        continue;
-      }
-
-      unit.summoned_this_turn = false;
-      unit.can_attack = true;
-      unit.exhausted = false;
-      unit.has_attacked_this_turn = false;
-      unit.attacks_this_turn = 0;
-
-      if (hasKeyword(unit, "immobile")) {
-        unit.can_attack = false;
-        unit.exhausted = true;
-      }
-
-      if (!unit.once_per_turn_flags || typeof unit.once_per_turn_flags !== "object") {
-        unit.once_per_turn_flags = {};
-      }
-    }
-  }
-
-  state.turn_time_left = TURN_TIME_LIMIT_SECONDS;
-  state.turn_timer_active = true;
-  state.turn_timer_timeout_handled = false;
-
-  addBattleLog(state, "Turn " + state.turn_number + ": " + currentPlayer.name + "'s turn started.");
+    inflation_counters: 0,
+    scholar_cards_played_this_game: 0,
+    scholar_played_count: 0,
+    played_trait_counts: {},
+    last_spell_cast: null
+  };
 }
 
 function makeInitialMatchState(match) {
@@ -1359,27 +965,35 @@ function makeInitialMatchState(match) {
 
     turn_number: 1,
     current_player_id: "player1",
-
-    // battle_engine.js 互換用
     turn_seat: "A",
-    winner_seat: null,
-    loser_seat: null,
 
-    game_over: false,
     status_message: "",
+    game_over: false,
+    winner_seat: "",
+    loser_seat: "",
+
     turn_time_left: TURN_TIME_LIMIT_SECONDS,
     turn_timer_active: false,
     turn_timer_timeout_handled: false,
 
     player1,
     player2,
-
-    // battle_engine.js 互換用。
-    // 同じ player object を参照させるので、player1/player2 と二重管理にならない。
     players: {
       A: player1,
       B: player2
     },
+
+    owner_to_seat_id: {
+      player1: "A",
+      player2: "B"
+    },
+    seat_to_owner_id: {
+      A: "player1",
+      B: "player2"
+    },
+
+    battle_log_messages: [],
+    log: [],
 
     selecting_target: false,
     selecting_hand_card: false,
@@ -1391,671 +1005,30 @@ function makeInitialMatchState(match) {
     selected_attacker_owner: "",
     selected_attacker_index: -1,
     pending_ability: {},
-
-    // battle_engine.js 互換用
     selected: null,
     pending_deaths: [],
     pending_summons: [],
-
-    battle_log_messages: [],
-
-    // battle_engine.js 互換用
-    log: [],
-
-    seat_to_owner_id: { A: "player1", B: "player2" },
-    owner_to_seat_id: { player1: "A", player2: "B" }
+    pending_hand_selection_effect: "",
+    pending_hand_selection_owner: "",
+    pending_hand_candidate_indexes: []
   };
 
-  // 既存Godot表示形式用のターン開始。
-  // ここで初手3枚のあと、先攻1ドロー + mana 1 になる。
-  startServerTurn(state);
+  const result = BattleEngine.startTurn(state, "A", { makeCardFromId });
 
-  // startServerTurn後に current_player_id / timer / mana が確定するので同期。
-  state.turn_seat = state.owner_to_seat_id[state.current_player_id] || "A";
-
-  // normalizeStateRuntime が log を見るので、既存ログも合わせる。
-  if (Array.isArray(state.battle_log_messages) && Array.isArray(state.log)) {
-    for (const message of state.battle_log_messages) {
-      if (!state.log.includes(message)) {
-        state.log.push(message);
-      }
-    }
+  if (result && result.ok === false) {
+    throw new Error(result.message || "Failed to start first turn.");
   }
 
-  return state;
+  return normalizeAuthoritativeState(state);
 }
 
-function clearPendingSelection(state) {
-  state.selecting_target = false;
-  state.selecting_hand_card = false;
-  state.pending_action_type = "none";
-  state.pending_card = null;
-  state.pending_hand_index = -1;
-  state.pending_card_owner = "";
-  state.pending_attacker_index = -1;
-  state.selected_attacker_owner = "";
-  state.selected_attacker_index = -1;
-  state.pending_ability = {};
-}
-
-function findRandomIndex(array, predicate) {
-  const candidates = [];
-
-  for (let i = 0; i < array.length; i++) {
-    if (predicate(array[i], i)) {
-      candidates.push(i);
-    }
-  }
-
-  if (candidates.length <= 0) {
-    return -1;
-  }
-
-  return candidates[Math.floor(Math.random() * candidates.length)];
-}
-
-function drawRandomCardFromDeck(player, predicate) {
-  if (!player || !Array.isArray(player.deck)) {
-    return null;
-  }
-
-  const index = findRandomIndex(player.deck, predicate);
-
-  if (index < 0) {
-    return null;
-  }
-
-  const card = player.deck.splice(index, 1)[0];
-
-  if (!Array.isArray(player.hand)) {
-    player.hand = [];
-  }
-
-  if (player.hand.length >= MAX_HAND_SIZE) {
-    player.graveyard.push(card);
-  } else {
-    player.hand.push(card);
-  }
-
-  return card;
-}
-
-function resolveSimpleSpellEffect(state, ownerId, card, payload) {
-  const player = getPlayerForOwnerId(state, ownerId);
-  const opponent = getOpponentForOwnerId(state, ownerId);
-  const effectId = String(card.effect_id || "none");
-  const power = Number(card.power || 0);
-
-  if (effectId === "draw") {
-    drawCards(player, power);
-    addBattleLog(state, player.name + " drew " + power + " card(s).");
-    return { ok: true, state };
-  }
-
-  if (effectId === "damage" && String(card.target_type || "none") === "enemy_player") {
-    damagePlayer(opponent, power);
-    addBattleLog(state, card.card_name + " dealt " + power + " damage to enemy leader.");
-    checkGameOver(state);
-    return { ok: true, state };
-  }
-
-  if (effectId === "heal" && String(card.target_type || "none") === "friendly_player") {
-    healPlayer(player, power);
-    addBattleLog(state, card.card_name + " healed allied leader for " + power + ".");
-    return { ok: true, state };
-  }
-
-  if (effectId === "buff_all_ally_units") {
-    for (const unit of player.board) {
-      changeStats(unit, 1, 1);
-    }
-    addBattleLog(state, card.card_name + " gave all allied units +1/+1.");
-    return { ok: true, state };
-  }
-
-  if (effectId === "economics_overflow") {
-    player.inflation_counters = Number(player.inflation_counters || 0) + 4;
-    addBattleLog(state, player.name + " gained 4 Inflation Counters.");
-    return { ok: true, state };
-  }
-
-  if (effectId === "book_of_rushwater") {
-    for (const unit of opponent.board) {
-      damageCard(unit, Number(card.power || 4));
-    }
-    removeDeadUnits(state);
-    checkGameOver(state);
-    addBattleLog(state, card.card_name + " dealt damage to all enemy units.");
-    return { ok: true, state };
-  }
-
-  if (effectId === "introduction_to_armory") {
-    for (const unit of player.board) {
-      unit.armor = Number(unit.armor || 0) + 1;
-    }
-    addBattleLog(state, card.card_name + " gave allied units Armor 1.");
-    return { ok: true, state };
-  }
-
-  if (effectId === "none") {
-    addBattleLog(state, player.name + " cast " + card.card_name + ".");
-    return { ok: true, state };
-  }
-
-  addBattleLog(state, player.name + " cast " + card.card_name + " but effect is not fully migrated yet: " + effectId);
-  return { ok: true, state };
-}
-
-function beginTargetSelection(state, ownerId, handIndex, card) {
-  state.selecting_target = true;
-  state.selecting_hand_card = false;
-  state.pending_action_type = "play_card_target";
-  state.pending_card = deepClone(card);
-  state.pending_hand_index = handIndex;
-  state.pending_card_owner = ownerId;
-  state.pending_ability = {};
-
-  addBattleLog(state, "Choose a target for " + String(card.card_name || card.card_id) + ".");
-
-  return { ok: true, state };
-}
-
-function canTargetPlayer(card, ownerId, targetOwnerId) {
-  const targetType = String(card.target_type || "none");
-
-  if (targetType === "friendly_player") {
-    return ownerId === targetOwnerId;
-  }
-
-  if (targetType === "enemy_player") {
-    return ownerId !== targetOwnerId;
-  }
-
-  if (targetType === "any_enemy") {
-    return ownerId !== targetOwnerId;
-  }
-
-  if (targetType === "any_friendly") {
-    return ownerId === targetOwnerId;
-  }
-
-  if (targetType === "any") {
-    return true;
-  }
-
-  return false;
-}
-
-function canTargetUnit(card, ownerId, targetOwnerId, unit) {
-  if (!unit) {
-    return false;
-  }
-
-  const targetType = String(card.target_type || "none");
-
-  if (targetType === "enemy_unit") {
-    return ownerId !== targetOwnerId;
-  }
-
-  if (targetType === "any_unit") {
-    return true;
-  }
-
-  if (targetType === "any_enemy") {
-    return ownerId !== targetOwnerId;
-  }
-
-  if (targetType === "any_friendly") {
-    return ownerId === targetOwnerId;
-  }
-
-  if (targetType === "any") {
-    return true;
-  }
-
-  return false;
-}
-
-function resolveTargetedCardOnPlayer(state, targetOwnerId) {
-  const ownerId = String(state.pending_card_owner || "");
-  const player = getPlayerForOwnerId(state, ownerId);
-  const targetPlayer = getPlayerForOwnerId(state, targetOwnerId);
-  const card = state.pending_card;
-
-  if (!ownerId || !player || !targetPlayer || !card) {
-    return { ok: false, message: "No pending targeted card." };
-  }
-
-  if (!canTargetPlayer(card, ownerId, targetOwnerId)) {
-    return { ok: false, message: "Invalid player target." };
-  }
-
-  if (card.effect_id === "damage") {
-    damagePlayer(targetPlayer, Number(card.power || 0));
-    addBattleLog(state, card.card_name + " dealt " + Number(card.power || 0) + " damage.");
-  } else if (card.effect_id === "heal") {
-    healPlayer(targetPlayer, Number(card.power || 0));
-    addBattleLog(state, card.card_name + " healed " + Number(card.power || 0) + ".");
-  } else {
-    addBattleLog(state, card.card_name + " resolved on leader. effect not fully migrated: " + card.effect_id);
-  }
-
-  player.graveyard.push(card);
-  clearPendingSelection(state);
-  checkGameOver(state);
-
-  return { ok: true, state };
-}
-
-function resolveTargetedCardOnUnit(state, targetOwnerId, unitIndex) {
-  const ownerId = String(state.pending_card_owner || "");
-  const player = getPlayerForOwnerId(state, ownerId);
-  const targetPlayer = getPlayerForOwnerId(state, targetOwnerId);
-  const card = state.pending_card;
-
-  if (!ownerId || !player || !targetPlayer || !card) {
-    return { ok: false, message: "No pending targeted card." };
-  }
-
-  if (!Array.isArray(targetPlayer.board) || unitIndex < 0 || unitIndex >= targetPlayer.board.length) {
-    return { ok: false, message: "Invalid unit target." };
-  }
-
-  const targetUnit = targetPlayer.board[unitIndex];
-
-  if (!canTargetUnit(card, ownerId, targetOwnerId, targetUnit)) {
-    return { ok: false, message: "Invalid unit target." };
-  }
-
-  if (hasKeyword(targetUnit, "untrickable") && ownerId !== targetOwnerId) {
-    return { ok: false, message: "Target is untrickable." };
-  }
-
-  if (card.effect_id === "damage") {
-    damageCard(targetUnit, Number(card.power || 0));
-    addBattleLog(state, card.card_name + " dealt " + Number(card.power || 0) + " damage to " + targetUnit.card_name + ".");
-  } else if (card.effect_id === "heal") {
-    healCard(targetUnit, Number(card.power || 0));
-    addBattleLog(state, card.card_name + " healed " + targetUnit.card_name + ".");
-  } else if (card.effect_id === "destroy_unit") {
-    targetUnit.hp = 0;
-    addBattleLog(state, card.card_name + " destroyed " + targetUnit.card_name + ".");
-  } else if (card.effect_id === "add_keyword") {
-    const ability = Array.isArray(card.abilities) && card.abilities.length > 0 ? card.abilities[0] : {};
-    const keyword = String(ability.keyword || "");
-
-    if (keyword) {
-      addKeyword(targetUnit, keyword);
-      addBattleLog(state, targetUnit.card_name + " gained " + keyword + ".");
-    }
-  } else if (card.effect_id === "add_keywords_to_unit") {
-    const ability = Array.isArray(card.abilities) && card.abilities.length > 0 ? card.abilities[0] : {};
-    const keywords = Array.isArray(ability.keywords) ? ability.keywords : [];
-
-    for (const keyword of keywords) {
-      addKeyword(targetUnit, String(keyword));
-    }
-
-    addBattleLog(state, targetUnit.card_name + " gained keywords from " + card.card_name + ".");
-  } else {
-    addBattleLog(state, card.card_name + " resolved on unit. effect not fully migrated: " + card.effect_id);
-  }
-
-  player.graveyard.push(card);
-  removeDeadUnits(state);
-  clearPendingSelection(state);
-  checkGameOver(state);
-
-  return { ok: true, state };
-}
-
-function resolveBattlecry(state, ownerId, card) {
-  const player = getPlayerForOwnerId(state, ownerId);
-  const opponent = getOpponentForOwnerId(state, ownerId);
-
-  if (!player || !card || !Array.isArray(card.abilities)) {
-    return;
-  }
-
-  for (const ability of card.abilities) {
-    if (!ability || String(ability.trigger || "") !== "battlecry") {
-      continue;
-    }
-
-    const effect = String(ability.effect || "");
-
-    if (effect === "draw") {
-      drawCards(player, Number(ability.amount || 1));
-      addBattleLog(state, card.card_name + " drew cards.");
-    } else if (effect === "summon_cards") {
-      const amount = Number(ability.amount || 1);
-      const cardId = String(ability.card_id || "");
-
-      for (let i = 0; i < amount; i++) {
-        if (player.board.length >= MAX_BOARD_SIZE) {
-          break;
-        }
-
-        const summoned = makeCardFromId(cardId);
-        applySummonState(summoned);
-        player.board.push(summoned);
-      }
-
-      addBattleLog(state, card.card_name + " summoned " + amount + " card(s).");
-    } else if (effect === "buff_trait") {
-      const trait = String(ability.trait || "");
-
-      for (const unit of player.board) {
-        if (hasTrait(unit, trait)) {
-          changeStats(unit, Number(ability.attack || 0), Number(ability.hp || 0));
-          const keywords = Array.isArray(ability.keywords) ? ability.keywords : [];
-          for (const keyword of keywords) {
-            addKeyword(unit, String(keyword));
-          }
-        }
-      }
-    } else if (effect === "scribe_of_history") {
-      const count = Array.isArray(opponent.board) ? opponent.board.length : 0;
-      changeStats(card, count, count);
-    } else if (effect === "blind_researcher") {
-      drawRandomCardFromDeck(player, (deckCard) => hasTrait(deckCard, "scholar"));
-    } else if (effect === "humble_librarian") {
-      const burnCount = player.hand.length;
-      while (player.hand.length > 0) {
-        player.graveyard.push(player.hand.shift());
-      }
-      drawCards(player, burnCount);
-    } else if (effect === "all_knowing_archivist") {
-      damagePlayer(opponent, Number(card.cost || 0));
-    } else {
-      addBattleLog(state, card.card_name + " battlecry not fully migrated: " + effect);
-    }
-  }
-
-  removeDeadUnits(state);
-  checkGameOver(state);
-}
-
-function playCardFromHand(match, seatId, handIndex) {
-  const state = match.state || {};
-  const ownerId = getOwnerIdForSeat(seatId);
-  const player = getPlayerForOwnerId(state, ownerId);
-
-  if (!ownerId || !player) {
-    return { ok: false, message: "Invalid player." };
+function normalizeAuthoritativeState(state) {
+  if (!state || typeof state !== "object") {
+    return {};
   }
-
-  if (state.game_over) {
-    return { ok: false, message: "Game is already over." };
-  }
-
-  if (state.current_player_id !== ownerId) {
-    return { ok: false, message: "Not your turn." };
-  }
-
-  if (!Array.isArray(player.hand)) {
-    player.hand = [];
-  }
-
-  if (!Array.isArray(player.board)) {
-    player.board = [];
-  }
-
-  if (!Array.isArray(player.graveyard)) {
-    player.graveyard = [];
-  }
-
-  if (handIndex < 0 || handIndex >= player.hand.length) {
-    return { ok: false, message: "Invalid hand index." };
-  }
-
-  const card = player.hand[handIndex];
-
-  if (!card) {
-    return { ok: false, message: "Selected card is missing." };
-  }
-
-  let cost = Number(card.cost || 0);
-
-  if (card.card_type === "unit" && Number(player.inflation_counters || 0) > 0) {
-    cost += 1;
-  }
-
-  if (Number(player.mana || 0) < cost) {
-    return {
-      ok: false,
-      message: "Not enough mana to play " + String(card.card_name || card.card_id || "card") + "."
-    };
-  }
-
-  if (card.card_type === "unit" && player.board.length >= MAX_BOARD_SIZE) {
-    return { ok: false, message: "Board is full." };
-  }
-
-  const targetType = String(card.target_type || "none");
-
-  if (targetType !== "none") {
-    player.mana = Number(player.mana || 0) - cost;
-    player.hand.splice(handIndex, 1);
-    return beginTargetSelection(state, ownerId, handIndex, card);
-  }
-
-  player.mana = Number(player.mana || 0) - cost;
-  player.hand.splice(handIndex, 1);
-
-  if (card.card_type === "unit") {
-    if (Number(player.inflation_counters || 0) > 0) {
-      player.inflation_counters = Number(player.inflation_counters || 0) - 1;
-      changeStats(card, 2, 1);
-    }
-
-    applySummonState(card);
-    player.board.push(card);
-
-    if (hasTrait(card, "scholar")) {
-      player.scholar_cards_played_this_game = Number(player.scholar_cards_played_this_game || 0) + 1;
-    }
-
-    addBattleLog(state, player.name + " summoned " + String(card.card_name || card.card_id) + ".");
-    resolveBattlecry(state, ownerId, card);
-
-    return { ok: true, state };
-  }
-
-  if (card.card_type === "spell") {
-    player.last_spell_cast = deepClone(card);
-    player.graveyard.push(card);
-
-    if (hasTrait(card, "scholar")) {
-      player.scholar_cards_played_this_game = Number(player.scholar_cards_played_this_game || 0) + 1;
-    }
-
-    const result = resolveSimpleSpellEffect(state, ownerId, card, {});
-    checkGameOver(state);
-    return result;
-  }
-
-  return { ok: false, message: "Unknown card type: " + String(card.card_type || "") };
-}
-
-function resolveAttack(match, seatId, attackerIndex, targetOwnerId, targetIndex, targetIsLeader) {
-  const state = match.state || {};
-  const ownerId = getOwnerIdForSeat(seatId);
-  const attackerPlayer = getPlayerForOwnerId(state, ownerId);
-  const defenderPlayer = getPlayerForOwnerId(state, targetOwnerId);
-
-  if (!ownerId || !attackerPlayer || !defenderPlayer) {
-    return { ok: false, message: "Invalid attacker or target." };
-  }
-
-  if (state.game_over) {
-    return { ok: false, message: "Game is already over." };
-  }
-
-  if (state.current_player_id !== ownerId) {
-    return { ok: false, message: "Not your turn." };
-  }
-
-  if (!Array.isArray(attackerPlayer.board) || attackerIndex < 0 || attackerIndex >= attackerPlayer.board.length) {
-    return { ok: false, message: "Invalid attacker index." };
-  }
-
-  const attacker = attackerPlayer.board[attackerIndex];
-
-  if (!attacker) {
-    return { ok: false, message: "Attacker is missing." };
-  }
-
-  if (!attacker.can_attack || attacker.exhausted || hasKeyword(attacker, "immobile")) {
-    return { ok: false, message: "This unit cannot attack." };
-  }
-
-  if (Number(attacker.attacks_this_turn || 0) >= Number(attacker.max_attacks_per_turn || 1)) {
-    return { ok: false, message: "This unit has already attacked enough times." };
-  }
-
-  if (targetIsLeader) {
-    if (ownerId === targetOwnerId) {
-      return { ok: false, message: "Cannot attack your own leader." };
-    }
-
-    if (hasKeyword(attacker, "rush") && attacker.summoned_this_turn && !hasKeyword(attacker, "haste")) {
-      return { ok: false, message: "Rush units cannot attack leader on the turn they are summoned." };
-    }
-
-    const taunts = defenderPlayer.board.filter((unit) => hasKeyword(unit, "taunt"));
-
-    if (taunts.length > 0) {
-      return { ok: false, message: "Enemy taunt unit must be attacked first." };
-    }
-
-    damagePlayer(defenderPlayer, Number(attacker.attack || 0));
-    attacker.attacks_this_turn = Number(attacker.attacks_this_turn || 0) + 1;
-
-    if (Number(attacker.attacks_this_turn || 0) >= Number(attacker.max_attacks_per_turn || 1)) {
-      attacker.can_attack = false;
-      attacker.exhausted = true;
-    }
-
-    addBattleLog(state, attacker.card_name + " attacked enemy leader for " + Number(attacker.attack || 0) + ".");
-    checkGameOver(state);
-    return { ok: true, state };
-  }
-
-  if (!Array.isArray(defenderPlayer.board) || targetIndex < 0 || targetIndex >= defenderPlayer.board.length) {
-    return { ok: false, message: "Invalid target unit index." };
-  }
-
-  const defender = defenderPlayer.board[targetIndex];
-
-  if (!defender) {
-    return { ok: false, message: "Target unit is missing." };
-  }
-
-  if (ownerId === targetOwnerId) {
-    return { ok: false, message: "Cannot attack your own unit." };
-  }
-
-  const taunts = defenderPlayer.board.filter((unit) => hasKeyword(unit, "taunt"));
-
-  if (taunts.length > 0 && !hasKeyword(defender, "taunt")) {
-    return { ok: false, message: "Enemy taunt unit must be attacked first." };
-  }
-
-  const attackerDamage = Number(attacker.attack || 0);
-  const defenderDamage = Number(defender.attack || 0);
-
-  if (hasKeyword(attacker, "deadly") && attackerDamage > 0) {
-    defender.hp = 0;
-  } else {
-    damageCard(defender, attackerDamage);
-  }
-
-  if (hasKeyword(defender, "deadly") && defenderDamage > 0) {
-    attacker.hp = 0;
-  } else {
-    damageCard(attacker, defenderDamage);
-  }
-
-  if (hasKeyword(attacker, "ricochet") && attackerDamage > 0) {
-    damagePlayer(defenderPlayer, attackerDamage);
-  }
-
-  attacker.attacks_this_turn = Number(attacker.attacks_this_turn || 0) + 1;
-
-  if (Number(attacker.attacks_this_turn || 0) >= Number(attacker.max_attacks_per_turn || 1)) {
-    attacker.can_attack = false;
-    attacker.exhausted = true;
-  }
-
-  removeDeadUnits(state);
-  addBattleLog(state, attacker.card_name + " attacked " + defender.card_name + ".");
-  checkGameOver(state);
-
-  return { ok: true, state };
-}
-
-function finishMatchBySurrender(match, seatId) {
-  const state = match.state || {};
-  const loserOwnerId = getOwnerIdForSeat(seatId);
-  const winnerOwnerId = getEnemyOwnerId(loserOwnerId);
-
-  if (!loserOwnerId || !winnerOwnerId) {
-    return { ok: false, message: "Invalid surrender seat." };
-  }
-
-  const loser = state[loserOwnerId];
-  const winner = state[winnerOwnerId];
-
-  if (!loser || !winner) {
-    return { ok: false, message: "Invalid surrender players." };
-  }
-
-  loser.hp = 0;
-  state.game_over = true;
-  state.turn_timer_active = false;
-  state.turn_timer_timeout_handled = true;
-  clearPendingSelection(state);
-
-  addBattleLog(state, loser.name + " surrendered. " + winner.name + " wins.");
-
-  return { ok: true, state };
-}
-
-function endServerTurn(match, seatId) {
-  const state = match.state || {};
-  const ownerId = getOwnerIdForSeat(seatId);
-
-  if (!ownerId) {
-    return { ok: false, message: "Invalid seat." };
-  }
-
-  if (state.game_over) {
-    return { ok: false, message: "Game is already over." };
-  }
-
-  if (state.current_player_id !== ownerId) {
-    return { ok: false, message: "Not your turn." };
-  }
-
-  const current = state[state.current_player_id];
-
-  if (current) {
-    state.battle_log_messages.push(current.name + "'s turn ended.");
-  }
-
-  state.current_player_id = ownerId === "player1" ? "player2" : "player1";
-  state.turn_number = Number(state.turn_number || 1) + 1;
-  clearPendingSelection(state);
-
-  startServerTurn(state);
-
-  return { ok: true, state };
-}
 
-function syncBattleEngineStateToLegacyState(state) {
-  if (!state) {
-    return state;
+  if (BattleEngine && typeof BattleEngine.normalizeStateRuntime === "function") {
+    BattleEngine.normalizeStateRuntime(state);
   }
 
   if (!state.players || typeof state.players !== "object") {
@@ -2073,21 +1046,27 @@ function syncBattleEngineStateToLegacyState(state) {
     state.player2 = state.players.B;
   }
 
-  if (!state.seat_to_owner_id || typeof state.seat_to_owner_id !== "object") {
-    state.seat_to_owner_id = { A: "player1", B: "player2" };
+  if (!state.owner_to_seat_id || typeof state.owner_to_seat_id !== "object") {
+    state.owner_to_seat_id = {
+      player1: "A",
+      player2: "B"
+    };
   }
 
-  if (!state.owner_to_seat_id || typeof state.owner_to_seat_id !== "object") {
-    state.owner_to_seat_id = { player1: "A", player2: "B" };
+  if (!state.seat_to_owner_id || typeof state.seat_to_owner_id !== "object") {
+    state.seat_to_owner_id = {
+      A: "player1",
+      B: "player2"
+    };
   }
 
   if (state.turn_seat === "A") {
     state.current_player_id = "player1";
   } else if (state.turn_seat === "B") {
     state.current_player_id = "player2";
-  } else if (!state.current_player_id) {
-    state.current_player_id = "player1";
-    state.turn_seat = "A";
+  } else {
+    state.turn_seat = state.owner_to_seat_id[state.current_player_id] || "A";
+    state.current_player_id = state.seat_to_owner_id[state.turn_seat] || "player1";
   }
 
   if (!Array.isArray(state.battle_log_messages)) {
@@ -2114,31 +1093,9 @@ function syncBattleEngineStateToLegacyState(state) {
     state.log.splice(0, state.log.length - 80);
   }
 
-  if (state.winner_seat && !state.game_over) {
-    state.game_over = true;
-    state.turn_timer_active = false;
-    state.turn_timer_timeout_handled = true;
-
-    const winnerOwnerId = state.seat_to_owner_id[state.winner_seat] || "";
-    const loserOwnerId = state.seat_to_owner_id[state.loser_seat] || "";
-
-    if (winnerOwnerId && state[winnerOwnerId]) {
-      state.status_message = state[winnerOwnerId].name + " wins.";
-    } else {
-      state.status_message = "Winner: " + state.winner_seat;
-    }
-
-    if (state.status_message && !state.battle_log_messages.includes(state.status_message)) {
-      state.battle_log_messages.push(state.status_message);
-    }
-
-    if (loserOwnerId && state[loserOwnerId]) {
-      state[loserOwnerId].hp = Math.min(0, Number(state[loserOwnerId].hp || 0));
-    }
-  }
-
   if (state.game_over) {
     state.turn_timer_active = false;
+    state.turn_timer_timeout_handled = true;
   }
 
   return state;
@@ -2149,22 +1106,36 @@ function getPublicBattleState(match) {
     return {};
   }
 
-  if (BattleEngine && typeof BattleEngine.makePublicState === "function") {
-    return BattleEngine.makePublicState(match.state);
+  try {
+    if (BattleEngine && typeof BattleEngine.makePublicState === "function") {
+      const publicState = BattleEngine.makePublicState(match.state);
+
+      if (publicState && typeof publicState === "object") {
+        publicState.match_id = match.match_id;
+        return publicState;
+      }
+    }
+  } catch (error) {
+    console.error(
+      "[PUBLIC STATE ERROR]",
+      match.match_id || "",
+      error && error.stack ? error.stack : error
+    );
   }
 
-  return match.state;
+  const fallback = normalizeAuthoritativeState(match.state);
+  fallback.match_id = match.match_id;
+  return fallback;
 }
 
-function broadcastMatchState(matchId, state) {
+function broadcastMatchState(matchId) {
   const match = matches.get(matchId);
 
   if (!match) {
     return;
   }
 
-  match.state = state || match.state || {};
-
+  match.state = normalizeAuthoritativeState(match.state);
   const publicState = getPublicBattleState(match);
 
   const clientA = clients.get(match.seats.A.client_id);
@@ -2189,15 +1160,11 @@ function broadcastMatchState(matchId, state) {
   }
 }
 
-function sendMatchFound(matchId, state) {
+function sendMatchFound(matchId) {
   const match = matches.get(matchId);
 
   if (!match) {
     return;
-  }
-
-  if (state) {
-    match.state = state;
   }
 
   const publicState = getPublicBattleState(match);
@@ -2231,91 +1198,192 @@ function sendMatchFound(matchId, state) {
   }
 }
 
+function tryMakeMatch() {
+  while (queue.length >= 2) {
+    const pair = findQueuePair();
+
+    if (!pair) {
+      console.log("[MATCH] Waiting for compatible queue pair. queue=", queue.length);
+      return;
+    }
+
+    const entryA = pair.entryA;
+    const entryB = pair.entryB;
+
+    removeClientFromQueue(entryA.client_id);
+    removeClientFromQueue(entryB.client_id);
+
+    const clientA = clients.get(entryA.client_id);
+    const clientB = clients.get(entryB.client_id);
+
+    if (!clientA || !clientB) {
+      continue;
+    }
+
+    if (!clientA.ws || clientA.ws.readyState !== WebSocket.OPEN) {
+      continue;
+    }
+
+    if (!clientB.ws || clientB.ws.readyState !== WebSocket.OPEN) {
+      continue;
+    }
+
+    const matchId = makeId("match", nextMatchNumber++);
+
+    const match = {
+      match_id: matchId,
+      state: {},
+      seats: {
+        A: {
+          client_id: entryA.client_id,
+          deck_data: entryA.deck_data,
+          side: entryA.side
+        },
+        B: {
+          client_id: entryB.client_id,
+          deck_data: entryB.deck_data,
+          side: entryB.side
+        }
+      },
+      created_at: Date.now(),
+      last_timer_update_at: Date.now()
+    };
+
+    try {
+      match.state = makeInitialMatchState(match);
+    } catch (error) {
+      console.error(
+        "[MATCH CREATE ERROR]",
+        matchId,
+        error && error.stack ? error.stack : error
+      );
+
+      clientA.queued = false;
+      clientB.queued = false;
+
+      sendError(clientA.ws, "Server failed while creating match.");
+      sendError(clientB.ws, "Server failed while creating match.");
+      continue;
+    }
+
+    matches.set(matchId, match);
+
+    clientA.match_id = matchId;
+    clientA.seat_id = "A";
+    clientA.queued = false;
+
+    clientB.match_id = matchId;
+    clientB.seat_id = "B";
+    clientB.queued = false;
+
+    console.log(
+      "[MATCH] Created Node authoritative match",
+      matchId,
+      "A=",
+      entryA.client_id,
+      entryA.side,
+      "B=",
+      entryB.client_id,
+      entryB.side
+    );
+
+    sendMatchFound(matchId);
+  }
+}
+
 function tickMatchTimers() {
   const now = Date.now();
 
   for (const [matchId, match] of matches.entries()) {
-    if (!match || !match.state) {
-      continue;
-    }
+    try {
+      if (!match || !match.state) {
+        continue;
+      }
 
-    const state = match.state;
+      const state = match.state;
 
-    if (state.game_over) {
-      continue;
-    }
+      if (state.game_over) {
+        continue;
+      }
 
-    if (!state.turn_timer_active) {
+      if (!state.turn_timer_active) {
+        match.last_timer_update_at = now;
+        continue;
+      }
+
+      if (state.turn_timer_timeout_handled) {
+        match.last_timer_update_at = now;
+        continue;
+      }
+
+      const last = Number(match.last_timer_update_at || now);
+      const deltaSeconds = Math.max(0, (now - last) / 1000.0);
       match.last_timer_update_at = now;
-      continue;
-    }
 
-    if (state.turn_timer_timeout_handled) {
-      match.last_timer_update_at = now;
-      continue;
-    }
+      if (deltaSeconds <= 0) {
+        continue;
+      }
 
-    const last = Number(match.last_timer_update_at || now);
-    const deltaSeconds = Math.max(0, (now - last) / 1000.0);
-    match.last_timer_update_at = now;
+      state.turn_time_left = Math.max(0, Number(state.turn_time_left || 0) - deltaSeconds);
 
-    if (deltaSeconds <= 0) {
-      continue;
-    }
+      if (state.turn_time_left > 0) {
+        continue;
+      }
 
-    state.turn_time_left = Math.max(0, Number(state.turn_time_left || 0) - deltaSeconds);
+      state.turn_time_left = 0;
+      state.turn_timer_timeout_handled = true;
 
-    if (state.turn_time_left > 0) {
-      continue;
-    }
-
-    state.turn_time_left = 0;
-    state.turn_timer_timeout_handled = true;
-
-    console.log(
-      "[MATCH TIMER] timeout",
-      matchId,
-      "turn=",
-      state.turn_number,
-      "current=",
-      state.current_player_id || state.turn_seat
-    );
-
-    const seatId = state.turn_seat || (
-      state.current_player_id === "player2" ? "B" : "A"
-    );
-
-    const result = BattleEngine.handleBattleAction(match, seatId, {
-      action: "end_turn",
-      reason: "timeout"
-    }, {
-      makeCardFromId
-    });
-
-    if (!result || result.ok !== true) {
       console.log(
-        "[MATCH TIMER] auto end_turn failed",
+        "[MATCH TIMER] timeout",
         matchId,
-        result && (result.message || result.reason)
-          ? (result.message || result.reason)
-          : "unknown error"
+        "turn=",
+        state.turn_number,
+        "seat=",
+        state.turn_seat
       );
 
-      state.turn_timer_active = false;
-      continue;
-    }
+      const seatId = state.turn_seat || (
+        state.current_player_id === "player2" ? "B" : "A"
+      );
 
-    match.state = syncBattleEngineStateToLegacyState(match.state);
-    match.last_timer_update_at = Date.now();
+      const result = BattleEngine.handleBattleAction(match, seatId, {
+        action: "end_turn",
+        reason: "timeout"
+      }, {
+        makeCardFromId
+      });
 
-    broadcastMatchState(matchId, match.state);
+      if (!result || result.ok !== true) {
+        console.error(
+          "[MATCH TIMER] auto end_turn failed",
+          matchId,
+          result && (result.message || result.reason)
+            ? (result.message || result.reason)
+            : "unknown error"
+        );
 
-    if (match.state && match.state.game_over) {
-      destroyMatch(matchId, "Match finished by timer.");
+        state.turn_timer_active = false;
+        continue;
+      }
+
+      match.state = normalizeAuthoritativeState(match.state);
+      match.last_timer_update_at = Date.now();
+
+      broadcastMatchState(matchId);
+
+      if (match.state && match.state.game_over) {
+        destroyMatch(matchId, "Match finished by timer.");
+      }
+    } catch (error) {
+      console.error(
+        "[MATCH TIMER ERROR]",
+        matchId,
+        error && error.stack ? error.stack : error
+      );
     }
   }
 }
-  
+
 function destroyMatch(matchId, reason = "Match destroyed.") {
   const match = matches.get(matchId);
 
@@ -2346,7 +1414,7 @@ function destroyMatch(matchId, reason = "Match destroyed.") {
 }
 
 // ============================================================================
-// WebSocket message handling
+// WebSocket
 // ============================================================================
 function handleClientMessage(client, message) {
   const type = String(message.type || "");
@@ -2384,7 +1452,11 @@ function handleClientMessage(client, message) {
 
       console.log("[QUEUE] joined", client.client_id, "side=", side, "queue=", queue.length);
 
-      safeSend(client.ws, { type: "queue_joined", side, queue_size: queue.length });
+      safeSend(client.ws, {
+        type: "queue_joined",
+        side,
+        queue_size: queue.length
+      });
 
       tryMakeMatch();
       return;
@@ -2426,37 +1498,49 @@ function handleClientMessage(client, message) {
         return;
       }
 
-      if (!match.state.players || typeof match.state.players !== "object") {
-        match.state.players = {
-          A: match.state.player1,
-          B: match.state.player2
-        };
-      }
-
-      if (!match.state.turn_seat) {
-        match.state.turn_seat = match.state.owner_to_seat_id
-          ? match.state.owner_to_seat_id[match.state.current_player_id] || "A"
-          : "A";
-      }
-
       const enginePayload = {
         ...payload,
         action
       };
 
-      const result = BattleEngine.handleBattleAction(match, seatId, enginePayload, {
-        makeCardFromId
-      });
+      let result = null;
 
-      if (!result.ok) {
-        sendActionRejected(client.client_id, result.reason || result.message || "Action rejected.");
+      try {
+        match.state = normalizeAuthoritativeState(match.state);
+
+        result = BattleEngine.handleBattleAction(match, seatId, enginePayload, {
+          makeCardFromId
+        });
+      } catch (error) {
+        console.error(
+          "[BATTLE ACTION ERROR]",
+          client.client_id,
+          "match=",
+          matchId,
+          "seat=",
+          seatId,
+          "action=",
+          action
+        );
+        console.error(error && error.stack ? error.stack : error);
+        sendActionRejected(client.client_id, "Server failed while resolving battle action.");
         return;
       }
 
-      // handleBattleAction は match.state を直接更新する。
-      // result.state は public state の可能性があるので、authoritative state として保存しない。
-      match.state = syncBattleEngineStateToLegacyState(match.state);
-      broadcastMatchState(matchId, match.state);
+      if (!result || result.ok !== true) {
+        sendActionRejected(
+          client.client_id,
+          result && (result.reason || result.message)
+            ? (result.reason || result.message)
+            : "Action rejected."
+        );
+        return;
+      }
+
+      match.state = normalizeAuthoritativeState(match.state);
+      match.last_timer_update_at = Date.now();
+
+      broadcastMatchState(matchId);
 
       if (match.state && match.state.game_over) {
         destroyMatch(matchId, "Match finished.");
@@ -2556,6 +1640,7 @@ function handleDisconnect(connection) {
 
   console.log("[WS] disconnected unknown connection");
 }
+
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const role = url.searchParams.get("role") || "client";
@@ -2657,7 +1742,6 @@ wss.on("connection", (ws, req) => {
     } catch (error) {
       console.error("[CLIENT MESSAGE ERROR]", clientId);
       console.error(error && error.stack ? error.stack : error);
-
       sendError(ws, "Server failed while handling client message.");
     }
   });
@@ -2679,7 +1763,9 @@ wss.on("connection", (ws, req) => {
     console.error("[CLIENT] socket error", clientId, error && error.stack ? error.stack : error);
   });
 });
+
 setInterval(tickMatchTimers, MATCH_TIMER_TICK_MS);
+
 server.listen(PORT, () => {
   console.log(`[SERVER] Node authoritative gateway + save API listening on port ${PORT}`);
 });
