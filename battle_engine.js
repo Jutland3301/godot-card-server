@@ -1,7 +1,7 @@
 "use strict";
 
 const C = require("./battle/constants");
-const S = require("./battle/state");
+const State = require("./battle/state");
 const Actions = require("./battle/actions");
 const CardOps = require("./battle/card_ops");
 const Combat = require("./battle/combat");
@@ -10,92 +10,197 @@ const Triggers = require("./battle/triggers");
 const Targets = require("./battle/targets");
 const Utils = require("./battle/utils");
 
-function handleBattleAction(match, seatId, payload, deps = {}) {
-  return Actions.handleBattleAction(match, seatId, payload, deps);
+function normalizeStateRuntime(state) {
+  State.normalizeState(state);
+  State.syncLegacy(state);
+  return state;
 }
 
-function normalizeStateRuntime(state) {
-  return S.normalizeState(state);
+function makePublicState(state) {
+  if (!state || typeof state !== "object") {
+    return {};
+  }
+
+  State.normalizeState(state);
+  State.syncLegacy(state);
+
+  if (typeof State.makePublicState === "function") {
+    return State.makePublicState(state);
+  }
+
+  return state;
+}
+
+function handleBattleAction(match, seatId, payload, deps = {}) {
+  if (!match || typeof match !== "object") {
+    return {
+      ok: false,
+      message: "Match is missing.",
+      state: {}
+    };
+  }
+
+  if (!match.state || typeof match.state !== "object") {
+    match.state = {};
+  }
+
+  State.normalizeState(match.state);
+  State.syncLegacy(match.state);
+
+  const result = Actions.handleBattleAction(
+    match,
+    seatId,
+    payload || {},
+    deps || {}
+  );
+
+  State.normalizeState(match.state);
+  State.syncLegacy(match.state);
+
+  return {
+    ok: result && result.ok === true,
+    message: result && result.message ? result.message : "",
+    reason: result && result.reason ? result.reason : "",
+    state: makePublicState(match.state)
+  };
 }
 
 function startTurn(state, seatId, deps = {}) {
-  return Actions.beginTurn(state, seatId, deps);
+  State.normalizeState(state);
+  const result = Actions.beginTurn(state, seatId, deps);
+  State.syncLegacy(state);
+  return result;
 }
 
 function endTurn(state, seatId, deps = {}) {
-  return Actions.endTurn(state, seatId, deps);
+  State.normalizeState(state);
+  const result = Actions.endTurn(state, seatId, deps);
+  State.syncLegacy(state);
+  return result;
 }
 
 function drawCard(state, seatId, amount = 1) {
-  return CardOps.drawCards(state, seatId, amount);
+  State.normalizeState(state);
+  const result = CardOps.drawCards(state, seatId, amount);
+  State.syncLegacy(state);
+  return result;
 }
 
 function playHandCard(state, seatId, handIndex, target = null, deps = {}) {
-  return Actions.playCardFromHand(state, seatId, handIndex, target, deps);
+  State.normalizeState(state);
+  const result = Actions.playCardFromHand(state, seatId, handIndex, target, deps);
+  State.syncLegacy(state);
+  return result;
 }
 
 function attackTarget(state, seatId, boardIndex, target, deps = {}) {
+  State.normalizeState(state);
+
   if (!target) {
-    return { ok: false, state, message: "Attack target is missing." };
+    return {
+      ok: false,
+      state,
+      message: "Attack target is missing."
+    };
   }
+
+  let result = null;
 
   if (target.type === "player") {
-    return Combat.attackFace(state, seatId, boardIndex, target.owner_seat, deps);
+    result = Combat.attackFace(state, seatId, boardIndex, target.owner_seat, deps);
+  } else if (target.type === "unit") {
+    result = Combat.attackUnit(state, seatId, boardIndex, target.owner_seat, target.board_index, deps);
+  } else {
+    result = {
+      ok: false,
+      state,
+      message: "Invalid attack target."
+    };
   }
 
-  if (target.type === "unit") {
-    return Combat.attackUnit(state, seatId, boardIndex, target.owner_seat, target.board_index, deps);
-  }
-
-  return { ok: false, state, message: "Invalid attack target." };
+  State.syncLegacy(state);
+  return result;
 }
 
 function validateTarget(state, sourceOwnerSeat, sourceCard, target) {
+  State.normalizeState(state);
   return Targets.isValidTargetForCard(state, sourceOwnerSeat, sourceCard, target);
 }
 
-function validateAttackTarget(state, attackerOwnerSeat, attacker, target) {
+function validateAttackTarget(_state, _attackerOwnerSeat, _attacker, target) {
   if (!target) {
-    return { ok: false, reason: "attack target required" };
+    return {
+      ok: false,
+      reason: "attack target required"
+    };
   }
 
-  if (target.type === "player") {
-    return { ok: true, reason: "ok" };
+  if (target.type === "player" || target.type === "unit") {
+    return {
+      ok: true,
+      reason: "ok"
+    };
   }
 
-  if (target.type === "unit") {
-    return { ok: true, reason: "ok" };
-  }
-
-  return { ok: false, reason: "invalid attack target" };
+  return {
+    ok: false,
+    reason: "invalid attack target"
+  };
 }
 
 function processDeathQueue(state, deps = {}) {
-  return Combat.processDeathQueue(state, deps);
+  State.normalizeState(state);
+  const result = Combat.processDeathQueue(state, deps);
+  State.syncLegacy(state);
+  return result;
 }
 
 function processSummonQueue(_state, _deps = {}) {
-  // 現在は即時 summon 処理に統一。
   return;
 }
 
 function resolveEffect(state, sourceOwnerSeat, sourceCard, ability = {}, explicitTarget = null, deps = {}) {
-  return Effects.resolveSpellOrCardEffect(state, sourceOwnerSeat, sourceCard, explicitTarget, ability, deps);
+  State.normalizeState(state);
+  const result = Effects.resolveSpellOrCardEffect(
+    state,
+    sourceOwnerSeat,
+    sourceCard,
+    explicitTarget,
+    ability,
+    deps
+  );
+  State.syncLegacy(state);
+  return result;
 }
 
 function resolveTriggeredAbilities(state, sourceOwnerSeat, sourceCard, triggerName, context = {}, deps = {}) {
-  return Triggers.resolveCardTrigger(state, sourceOwnerSeat, sourceCard, triggerName, context, deps);
+  State.normalizeState(state);
+  const result = Triggers.resolveCardTrigger(
+    state,
+    sourceOwnerSeat,
+    sourceCard,
+    triggerName,
+    context,
+    deps
+  );
+  State.syncLegacy(state);
+  return result;
 }
 
 function resolveGlobalTrigger(state, triggerName, context = {}, deps = {}) {
-  return Triggers.resolveGlobalTrigger(state, triggerName, context, deps);
+  State.normalizeState(state);
+  const result = Triggers.resolveGlobalTrigger(state, triggerName, context, deps);
+  State.syncLegacy(state);
+  return result;
 }
 
 module.exports = {
   C,
 
   handleBattleAction,
+  makePublicState,
   normalizeStateRuntime,
+
   startTurn,
   endTurn,
   drawCard,
@@ -113,7 +218,7 @@ module.exports = {
   normalizeSeatToOwner: Utils.normalizeSeatToOwner,
 
   _modules: {
-    state: S,
+    state: State,
     actions: Actions,
     cardOps: CardOps,
     combat: Combat,
