@@ -2054,76 +2054,95 @@ function endServerTurn(match, seatId) {
   return { ok: true, state };
 }
 
-function handleServerBattleAction(match, seatId, action, payload) {
-  if (!match) {
-    return { ok: false, message: "Match not found." };
+function syncBattleEngineStateToLegacyState(state) {
+  if (!state) {
+    return state;
   }
 
-  if (!match.state) {
-    return { ok: false, message: "Match state is missing." };
+  if (!state.players || typeof state.players !== "object") {
+    state.players = {
+      A: state.player1,
+      B: state.player2
+    };
   }
 
-  const state = match.state;
-
-  switch (action) {
-    case "hand_card_clicked": {
-      const handIndex = Number(payload.hand_index ?? payload.index ?? -1);
-      return playCardFromHand(match, seatId, handIndex);
-    }
-
-    case "board_slot_clicked": {
-      const ownerId = getOwnerIdForSeat(seatId);
-      const clickedOwnerId = String(payload.owner_id || payload.owner || "");
-      const index = Number(payload.index ?? payload.board_index ?? -1);
-
-      if (state.selecting_target && state.pending_action_type === "play_card_target") {
-        return resolveTargetedCardOnUnit(state, clickedOwnerId, index);
-      }
-
-      if (state.selected_attacker_owner && Number(state.selected_attacker_index || -1) >= 0) {
-        return resolveAttack(match, seatId, Number(state.selected_attacker_index), clickedOwnerId, index, false);
-      }
-
-      if (clickedOwnerId !== ownerId) {
-        return { ok: false, message: "Select your own unit to attack first." };
-      }
-
-      state.selected_attacker_owner = ownerId;
-      state.selected_attacker_index = index;
-      state.pending_action_type = "attack_target";
-      addBattleLog(state, "Choose an attack target.");
-      return { ok: true, state };
-    }
-
-    case "player_face_clicked": {
-      const clickedOwnerId = String(payload.owner_id || payload.owner || "");
-
-      if (state.selecting_target && state.pending_action_type === "play_card_target") {
-        return resolveTargetedCardOnPlayer(state, clickedOwnerId);
-      }
-
-      if (state.selected_attacker_owner && Number(state.selected_attacker_index || -1) >= 0) {
-        return resolveAttack(match, seatId, Number(state.selected_attacker_index), clickedOwnerId, -1, true);
-      }
-
-      return { ok: false, message: "No pending target selection." };
-    }
-
-    case "cancel_selection": {
-      clearPendingSelection(state);
-      addBattleLog(state, "Selection canceled.");
-      return { ok: true, state };
-    }
-
-    case "end_turn":
-      return endServerTurn(match, seatId);
-
-    case "surrender":
-      return finishMatchBySurrender(match, seatId);
-
-    default:
-      return { ok: false, message: "Node battle action not implemented yet: " + action };
+  if (state.players.A) {
+    state.player1 = state.players.A;
   }
+
+  if (state.players.B) {
+    state.player2 = state.players.B;
+  }
+
+  if (!state.seat_to_owner_id || typeof state.seat_to_owner_id !== "object") {
+    state.seat_to_owner_id = { A: "player1", B: "player2" };
+  }
+
+  if (!state.owner_to_seat_id || typeof state.owner_to_seat_id !== "object") {
+    state.owner_to_seat_id = { player1: "A", player2: "B" };
+  }
+
+  if (state.turn_seat === "A") {
+    state.current_player_id = "player1";
+  } else if (state.turn_seat === "B") {
+    state.current_player_id = "player2";
+  } else if (!state.current_player_id) {
+    state.current_player_id = "player1";
+    state.turn_seat = "A";
+  }
+
+  if (!Array.isArray(state.battle_log_messages)) {
+    state.battle_log_messages = [];
+  }
+
+  if (!Array.isArray(state.log)) {
+    state.log = [];
+  }
+
+  for (const message of state.log) {
+    const text = String(message || "");
+
+    if (text && !state.battle_log_messages.includes(text)) {
+      state.battle_log_messages.push(text);
+    }
+  }
+
+  if (state.battle_log_messages.length > 80) {
+    state.battle_log_messages.splice(0, state.battle_log_messages.length - 80);
+  }
+
+  if (state.log.length > 80) {
+    state.log.splice(0, state.log.length - 80);
+  }
+
+  if (state.winner_seat && !state.game_over) {
+    state.game_over = true;
+    state.turn_timer_active = false;
+    state.turn_timer_timeout_handled = true;
+
+    const winnerOwnerId = state.seat_to_owner_id[state.winner_seat] || "";
+    const loserOwnerId = state.seat_to_owner_id[state.loser_seat] || "";
+
+    if (winnerOwnerId && state[winnerOwnerId]) {
+      state.status_message = state[winnerOwnerId].name + " wins.";
+    } else {
+      state.status_message = "Winner: " + state.winner_seat;
+    }
+
+    if (state.status_message && !state.battle_log_messages.includes(state.status_message)) {
+      state.battle_log_messages.push(state.status_message);
+    }
+
+    if (loserOwnerId && state[loserOwnerId]) {
+      state[loserOwnerId].hp = Math.min(0, Number(state[loserOwnerId].hp || 0));
+    }
+  }
+
+  if (state.game_over) {
+    state.turn_timer_active = false;
+  }
+
+  return state;
 }
 
 function broadcastMatchState(matchId, state) {
@@ -2266,49 +2285,69 @@ function handleClientMessage(client, message) {
     }
 
     case "battle_action": {
-  const matchId = String(message.match_id || "");
-  const seatId = String(message.seat_id || "");
-  const action = String(message.action || "");
-  const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
+      const matchId = String(message.match_id || "");
+      const seatId = String(message.seat_id || "");
+      const action = String(message.action || "");
+      const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
 
-  if (!matchId || !seatId || !action) {
-    sendActionRejected(client.client_id, "Invalid battle_action message.");
-    return;
-  }
+      if (!matchId || !seatId || !action) {
+        sendActionRejected(client.client_id, "Invalid battle_action message.");
+        return;
+      }
 
-  const match = matches.get(matchId);
+      const match = matches.get(matchId);
 
-  if (!match) {
-    sendActionRejected(client.client_id, "Match not found.");
-    return;
-  }
+      if (!match) {
+        sendActionRejected(client.client_id, "Match not found.");
+        return;
+      }
 
-  if (client.match_id !== matchId) {
-    sendActionRejected(client.client_id, "You are not in this match.");
-    return;
-  }
+      if (client.match_id !== matchId) {
+        sendActionRejected(client.client_id, "You are not in this match.");
+        return;
+      }
 
-  if (client.seat_id !== seatId) {
-    sendActionRejected(client.client_id, "Invalid seat for this client.");
-    return;
-  }
+      if (client.seat_id !== seatId) {
+        sendActionRejected(client.client_id, "Invalid seat for this client.");
+        return;
+      }
 
-  const result = handleServerBattleAction(match, seatId, action, payload);
+      if (!match.state.players || typeof match.state.players !== "object") {
+        match.state.players = {
+          A: match.state.player1,
+          B: match.state.player2
+        };
+      }
 
-  if (!result.ok) {
-    sendActionRejected(client.client_id, result.message || "Action rejected.");
-    return;
-  }
+      if (!match.state.turn_seat) {
+        match.state.turn_seat = match.state.owner_to_seat_id
+          ? match.state.owner_to_seat_id[match.state.current_player_id] || "A"
+          : "A";
+      }
 
-  match.state = result.state || match.state;
-  broadcastMatchState(matchId, match.state);
+      const enginePayload = {
+        ...payload,
+        action
+      };
 
-  if (match.state && match.state.game_over) {
-    destroyMatch(matchId, "Match finished.");
-  }
+      const result = handleBattleAction(match, seatId, enginePayload, {
+        makeCardFromId
+      });
 
-  return;
-}
+      if (!result.ok) {
+        sendActionRejected(client.client_id, result.reason || result.message || "Action rejected.");
+        return;
+      }
+
+      match.state = syncBattleEngineStateToLegacyState(result.state || match.state);
+      broadcastMatchState(matchId, match.state);
+
+      if (match.state && match.state.game_over) {
+        destroyMatch(matchId, "Match finished.");
+      }
+
+      return;
+    }
 
     case "ping": {
       safeSend(client.ws, { type: "pong" });
