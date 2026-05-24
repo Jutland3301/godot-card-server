@@ -407,6 +407,113 @@ async function handleCollection(req, res) {
   }
 }
 
+async function handleOpenPack(req, res) {
+  if (!requireDb(res)) return;
+
+  const userId = getBearerUserId(req);
+
+  if (userId <= 0) {
+    sendJson(res, 401, {
+      ok: false,
+      error: "missing or invalid token"
+    });
+    return;
+  }
+
+  let body = {};
+
+  try {
+    body = await readBody(req);
+  } catch (e) {
+    sendJson(res, 400, {
+      ok: false,
+      error: e.message
+    });
+    return;
+  }
+
+  const packType = String(body.pack_type || "test").trim();
+  const packSize = Number(body.pack_size || 5);
+
+  const safePackSize = Number.isInteger(packSize) && packSize > 0 && packSize <= 20
+    ? packSize
+    : 5;
+
+  try {
+    const cardResult = await pool.query(
+      `
+      SELECT card_id
+      FROM cards
+      WHERE enabled = TRUE
+      ORDER BY RANDOM()
+      LIMIT $1
+      `,
+      [safePackSize]
+    );
+
+    if (cardResult.rows.length === 0) {
+      sendJson(res, 500, {
+        ok: false,
+        error: "no cards available for pack"
+      });
+      return;
+    }
+
+    const packLogResult = await pool.query(
+      `
+      INSERT INTO pack_logs (user_id, pack_type)
+      VALUES ($1, $2)
+      RETURNING id, user_id, pack_type, opened_at
+      `,
+      [userId, packType]
+    );
+
+    const packLog = packLogResult.rows[0];
+    const results = [];
+
+    for (const row of cardResult.rows) {
+      const cardId = row.card_id;
+      const amount = 1;
+
+      await pool.query(
+        `
+        INSERT INTO pack_results (pack_log_id, card_id, amount)
+        VALUES ($1, $2, $3)
+        `,
+        [packLog.id, cardId, amount]
+      );
+
+      await pool.query(
+        `
+        INSERT INTO user_cards (user_id, card_id, count)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, card_id)
+        DO UPDATE SET count = user_cards.count + EXCLUDED.count
+        `,
+        [userId, cardId, amount]
+      );
+
+      results.push({
+        card_id: cardId,
+        amount: amount
+      });
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      pack_log: packLog,
+      results: results
+    });
+  } catch (e) {
+    console.error("open pack error:", e);
+    sendJson(res, 500, {
+      ok: false,
+      error: "failed to open pack",
+      detail: e.message
+    });
+  }
+}
+
 async function handleDbTest(req, res) {
   if (!requireDb(res)) return;
 
