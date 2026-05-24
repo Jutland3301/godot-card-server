@@ -1517,7 +1517,7 @@ function handleClientMessage(client, message) {
       }
 
       removeClientFromQueue(client.client_id);
-
+      destroyMatchesForClient(client.client_id, "Client re-entered queue.");
       client.queued = true;
       client.match_id = "";
       client.seat_id = "";
