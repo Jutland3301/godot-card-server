@@ -2445,3 +2445,130 @@ function handleDisconnect(connection) {
 
   console.log("[WS] disconnected unknown connection");
 }
+wss.on("connection", (ws, req) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const role = url.searchParams.get("role") || "client";
+
+  if (role === "host") {
+    const hostId = makeId("host", nextHostNumber++);
+
+    const host = {
+      role: "host",
+      ws,
+      host_id: hostId,
+      ready: false,
+      capacity: 1,
+      current_match_id: ""
+    };
+
+    hosts.set(hostId, host);
+
+    console.log("[HOST] connected but unused in Node authoritative mode", hostId);
+
+    safeSend(ws, {
+      type: "host_welcome",
+      host_id: hostId,
+      mode: "node_authoritative"
+    });
+
+    ws.on("message", (data) => {
+      try {
+        const text = data.toString();
+        const message = safeParse(text);
+
+        if (!message) {
+          console.log("[HOST] invalid JSON from", hostId, "raw=", text);
+          return;
+        }
+
+        console.log("[HOST MESSAGE]", hostId, JSON.stringify(message));
+        handleHostMessage(host, message);
+      } catch (error) {
+        console.error("[HOST MESSAGE ERROR]", hostId);
+        console.error(error && error.stack ? error.stack : error);
+      }
+    });
+
+    ws.on("close", (code, reason) => {
+      console.log(
+        "[HOST] socket close",
+        hostId,
+        "code=",
+        code,
+        "reason=",
+        reason ? reason.toString() : ""
+      );
+
+      handleDisconnect(host);
+    });
+
+    ws.on("error", (error) => {
+      console.error("[HOST] socket error", hostId, error && error.stack ? error.stack : error);
+    });
+
+    return;
+  }
+
+  const clientId = makeId("client", nextClientNumber++);
+
+  const client = {
+    role: "client",
+    ws,
+    client_id: clientId,
+    user_id: "",
+    queued: false,
+    match_id: "",
+    seat_id: ""
+  };
+
+  clients.set(clientId, client);
+
+  console.log("[CLIENT] connected", clientId);
+
+  safeSend(ws, {
+    type: "welcome",
+    client_id: clientId
+  });
+
+  ws.on("message", (data) => {
+    try {
+      const text = data.toString();
+      const message = safeParse(text);
+
+      if (!message) {
+        console.log("[CLIENT] invalid JSON from", clientId, "raw=", text);
+        sendError(ws, "Invalid JSON.");
+        return;
+      }
+
+      console.log("[CLIENT MESSAGE]", clientId, JSON.stringify(message));
+      handleClientMessage(client, message);
+    } catch (error) {
+      console.error("[CLIENT MESSAGE ERROR]", clientId);
+      console.error(error && error.stack ? error.stack : error);
+
+      sendError(ws, "Server failed while handling client message.");
+    }
+  });
+
+  ws.on("close", (code, reason) => {
+    console.log(
+      "[CLIENT] socket close",
+      clientId,
+      "code=",
+      code,
+      "reason=",
+      reason ? reason.toString() : ""
+    );
+
+    handleDisconnect(client);
+  });
+
+  ws.on("error", (error) => {
+    console.error("[CLIENT] socket error", clientId, error && error.stack ? error.stack : error);
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`[SERVER] Node authoritative gateway + save API listening on port ${PORT}`);
+});
