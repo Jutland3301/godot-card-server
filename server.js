@@ -5,6 +5,14 @@ const { Pool } = require("pg");
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || "";
 
+const STARTING_HP = 20;
+const STARTING_HAND_SIZE = 3;
+const STARTING_MANA = 0;
+const MANA_GAIN_PER_TURN = 1;
+const MAX_MANA = 10;
+const TURN_TIME_LIMIT_SECONDS = 45.0;
+const MAX_HAND_SIZE = 7;
+
 const pool = DATABASE_URL
   ? new Pool({
       connectionString: DATABASE_URL,
@@ -19,7 +27,7 @@ let nextHostNumber = 1;
 let nextMatchNumber = 1;
 
 const clients = new Map();
-const hosts = new Map();
+const hosts = new Map(); // 互換用に残す。Node authoritative戦闘では使わない。
 const queue = [];
 const matches = new Map();
 
@@ -211,6 +219,9 @@ function countCards(cardIds) {
   return counts;
 }
 
+// ============================================================================
+// HTTP API
+// ============================================================================
 async function handleRegister(req, res) {
   const body = await readJsonBody(req);
 
@@ -786,7 +797,7 @@ async function handleHttp(req, res) {
     if (path === "/" || path === "/health") {
       sendJson(res, 200, {
         ok: true,
-        service: "godot-card-authoritative-gateway",
+        service: "godot-card-node-authoritative-step1",
         db: !!pool,
         clients: clients.size,
         hosts: hosts.size,
@@ -860,6 +871,9 @@ async function handleHttp(req, res) {
 const server = http.createServer(handleHttp);
 const wss = new WebSocketServer({ server });
 
+// ============================================================================
+// Node authoritative battle helpers - Step 1
+// ============================================================================
 function removeClientFromQueue(clientId) {
   for (let i = queue.length - 1; i >= 0; i--) {
     if (queue[i].client_id === clientId) {
@@ -868,21 +882,29 @@ function removeClientFromQueue(clientId) {
   }
 }
 
-function getAvailableHost() {
-  for (const host of hosts.values()) {
-    if (!host.ready) {
-      continue;
-    }
+function findQueuePair() {
+  for (let i = 0; i < queue.length; i++) {
+    for (let j = i + 1; j < queue.length; j++) {
+      const a = queue[i];
+      const b = queue[j];
 
-    if (host.current_match_id) {
-      continue;
-    }
+      if (!a || !b) {
+        continue;
+      }
 
-    if (!host.ws || host.ws.readyState !== host.ws.OPEN) {
-      continue;
-    }
+      if (!clients.has(a.client_id) || !clients.has(b.client_id)) {
+        continue;
+      }
 
-    return host;
+      if (a.side === b.side) {
+        continue;
+      }
+
+      return {
+        entryA: a.side === "human" ? a : b,
+        entryB: a.side === "human" ? b : a
+      };
+    }
   }
 
   return null;
@@ -890,15 +912,18 @@ function getAvailableHost() {
 
 function tryMakeMatch() {
   while (queue.length >= 2) {
-    const host = getAvailableHost();
+    const pair = findQueuePair();
 
-    if (!host) {
-      console.log("[MATCH] No available host. queue=", queue.length);
+    if (!pair) {
+      console.log("[MATCH] Waiting for compatible queue pair. queue=", queue.length);
       return;
     }
 
-    const entryA = queue.shift();
-    const entryB = queue.shift();
+    const entryA = pair.entryA;
+    const entryB = pair.entryB;
+
+    removeClientFromQueue(entryA.client_id);
+    removeClientFromQueue(entryB.client_id);
 
     const clientA = clients.get(entryA.client_id);
     const clientB = clients.get(entryB.client_id);
@@ -919,7 +944,6 @@ function tryMakeMatch() {
 
     const match = {
       match_id: matchId,
-      host_id: host.host_id,
       state: {},
       seats: {
         A: {
@@ -932,8 +956,11 @@ function tryMakeMatch() {
           deck_data: entryB.deck_data,
           side: entryB.side
         }
-      }
+      },
+      created_at: Date.now()
     };
+
+    match.state = makeInitialMatchState(match);
 
     matches.set(matchId, match);
 
@@ -945,13 +972,9 @@ function tryMakeMatch() {
     clientB.seat_id = "B";
     clientB.queued = false;
 
-    host.current_match_id = matchId;
-
     console.log(
-      "[MATCH] Creating match",
+      "[MATCH] Created Node authoritative match",
       matchId,
-      "host=",
-      host.host_id,
       "A=",
       entryA.client_id,
       entryA.side,
@@ -960,56 +983,382 @@ function tryMakeMatch() {
       entryB.side
     );
 
-    safeSend(host.ws, {
-      type: "host_create_match",
-      host_id: host.host_id,
-      match_id: matchId,
-      seats: {
-        A: {
-          client_id: entryA.client_id,
-          side: entryA.side,
-          deck_data: entryA.deck_data
-        },
-        B: {
-          client_id: entryB.client_id,
-          side: entryB.side,
-          deck_data: entryB.deck_data
-        }
-      }
-    });
+    sendMatchFound(matchId, match.state);
   }
 }
 
-function getSideFromDeckData(deckData) {
+function getCardIdsFromDeckData(deckData) {
   if (!deckData || typeof deckData !== "object") {
-    return "";
+    return [];
   }
 
-  return String(deckData.side || "").toLowerCase();
-}
-
-function validateDeckData(deckData) {
-  if (!deckData || typeof deckData !== "object") {
-    return "deck_data is missing.";
-  }
-
-  const side = getSideFromDeckData(deckData);
-
-  if (side !== "human" && side !== "god") {
-    return "deck_data.side must be human or god.";
-  }
-
-  const cards = Array.isArray(deckData.card_ids)
+  const source = Array.isArray(deckData.card_ids)
     ? deckData.card_ids
     : Array.isArray(deckData.cards)
       ? deckData.cards
       : [];
 
-  if (cards.length <= 0) {
-    return "deck_data has no cards.";
+  return source
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+function shuffleArray(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const temp = array[i];
+    array[i] = array[j];
+    array[j] = temp;
+  }
+
+  return array;
+}
+
+function makeInitialCardState(cardId) {
+  const cleanCardId = String(cardId || "").trim();
+
+  return {
+    card_id: cleanCardId,
+    card_name: cleanCardId,
+    display_name: cleanCardId,
+    cost: 0,
+    power: 0,
+    card_type: "unit",
+    target_type: "none",
+    effect_id: "",
+    trigger_id: "none",
+
+    attack: 0,
+    hp: 1,
+    max_hp: 1,
+    armor: 0,
+    base_attack: 0,
+    base_hp: 1,
+
+    side: "neutral",
+    traits: [],
+    keywords: [],
+    tags: [],
+    abilities: [],
+
+    can_attack: false,
+    exhausted: false,
+    summoned_this_turn: false,
+    has_attacked_this_turn: false,
+    attacks_this_turn: 0,
+    max_attacks_per_turn: 1,
+
+    temporary_keywords: {},
+    once_per_turn_flags: {}
+  };
+}
+
+function makeInitialPlayerState(ownerId, deckData) {
+  const cardIds = getCardIdsFromDeckData(deckData);
+  const deck = shuffleArray(cardIds.map((cardId) => makeInitialCardState(cardId)));
+
+  return {
+    owner_id: ownerId,
+    name: ownerId === "player1" ? "Player1" : "Player2",
+
+    hp: STARTING_HP,
+    max_hp: STARTING_HP,
+
+    mana: STARTING_MANA,
+    max_mana: STARTING_MANA,
+
+    deck,
+    hand: [],
+    board: [],
+    graveyard: [],
+
+    scholar_cards_played_this_game: 0,
+    inflation_counters: 0
+  };
+}
+
+function drawOneCard(player) {
+  if (!player) {
+    return null;
+  }
+
+  if (!Array.isArray(player.deck)) {
+    player.deck = [];
+  }
+
+  if (!Array.isArray(player.hand)) {
+    player.hand = [];
+  }
+
+  if (!Array.isArray(player.graveyard)) {
+    player.graveyard = [];
+  }
+
+  if (player.deck.length <= 0) {
+    return null;
+  }
+
+  const card = player.deck.pop();
+
+  if (player.hand.length >= MAX_HAND_SIZE) {
+    player.graveyard.push(card);
+    return card;
+  }
+
+  player.hand.push(card);
+  return card;
+}
+
+function startServerTurn(state) {
+  if (!state || state.game_over) {
+    return;
+  }
+
+  const currentPlayerId = String(state.current_player_id || "player1");
+  const currentPlayer = state[currentPlayerId];
+
+  if (!currentPlayer) {
+    return;
+  }
+
+  const drawn = drawOneCard(currentPlayer);
+
+  if (!drawn) {
+    state.game_over = true;
+    state.status_message = currentPlayer.name + " loses because they cannot draw a card.";
+    state.battle_log_messages.push(state.status_message);
+    state.turn_timer_active = false;
+    return;
+  }
+
+  currentPlayer.max_mana = Math.min(
+    Number(currentPlayer.max_mana || 0) + MANA_GAIN_PER_TURN,
+    MAX_MANA
+  );
+  currentPlayer.mana = currentPlayer.max_mana;
+
+  if (Array.isArray(currentPlayer.board)) {
+    for (const unit of currentPlayer.board) {
+      if (!unit) {
+        continue;
+      }
+
+      unit.summoned_this_turn = false;
+      unit.can_attack = true;
+      unit.exhausted = false;
+      unit.has_attacked_this_turn = false;
+      unit.attacks_this_turn = 0;
+
+      if (!unit.once_per_turn_flags || typeof unit.once_per_turn_flags !== "object") {
+        unit.once_per_turn_flags = {};
+      }
+    }
+  }
+
+  state.turn_time_left = TURN_TIME_LIMIT_SECONDS;
+  state.turn_timer_active = true;
+  state.turn_timer_timeout_handled = false;
+
+  state.status_message = "Turn " + state.turn_number + ": " + currentPlayer.name + "'s turn started.";
+  state.battle_log_messages.push(state.status_message);
+}
+
+function makeInitialMatchState(match) {
+  const player1 = makeInitialPlayerState("player1", match.seats.A.deck_data);
+  const player2 = makeInitialPlayerState("player2", match.seats.B.deck_data);
+
+  for (let i = 0; i < STARTING_HAND_SIZE; i++) {
+    drawOneCard(player1);
+    drawOneCard(player2);
+  }
+
+  const state = {
+    match_id: match.match_id,
+    authority_mode: "server",
+
+    turn_number: 1,
+    current_player_id: "player1",
+    game_over: false,
+    status_message: "",
+    turn_time_left: TURN_TIME_LIMIT_SECONDS,
+    turn_timer_active: false,
+    turn_timer_timeout_handled: false,
+
+    player1,
+    player2,
+
+    selecting_target: false,
+    selecting_hand_card: false,
+    pending_action_type: "none",
+    pending_card: null,
+    pending_attacker_index: -1,
+    selected_attacker_owner: "",
+    selected_attacker_index: -1,
+    pending_ability: {},
+
+    battle_log_messages: [],
+
+    seat_to_owner_id: {
+      A: "player1",
+      B: "player2"
+    },
+    owner_to_seat_id: {
+      player1: "A",
+      player2: "B"
+    }
+  };
+
+  startServerTurn(state);
+
+  return state;
+}
+
+function getOwnerIdForSeat(seatId) {
+  if (seatId === "A") {
+    return "player1";
+  }
+
+  if (seatId === "B") {
+    return "player2";
   }
 
   return "";
+}
+
+function getEnemyOwnerId(ownerId) {
+  if (ownerId === "player1") {
+    return "player2";
+  }
+
+  if (ownerId === "player2") {
+    return "player1";
+  }
+
+  return "";
+}
+
+function finishMatchBySurrender(match, seatId) {
+  const state = match.state || {};
+  const loserOwnerId = getOwnerIdForSeat(seatId);
+  const winnerOwnerId = getEnemyOwnerId(loserOwnerId);
+
+  if (!loserOwnerId || !winnerOwnerId) {
+    return {
+      ok: false,
+      message: "Invalid surrender seat."
+    };
+  }
+
+  const loser = state[loserOwnerId];
+  const winner = state[winnerOwnerId];
+
+  if (!loser || !winner) {
+    return {
+      ok: false,
+      message: "Invalid surrender players."
+    };
+  }
+
+  loser.hp = 0;
+  state.game_over = true;
+  state.turn_timer_active = false;
+  state.turn_timer_timeout_handled = true;
+  state.selecting_target = false;
+  state.selecting_hand_card = false;
+  state.pending_action_type = "none";
+  state.pending_card = null;
+  state.pending_attacker_index = -1;
+  state.selected_attacker_owner = "";
+  state.selected_attacker_index = -1;
+  state.pending_ability = {};
+
+  state.status_message = loser.name + " surrendered. " + winner.name + " wins.";
+  state.battle_log_messages.push(state.status_message);
+
+  return {
+    ok: true,
+    state
+  };
+}
+
+function endServerTurn(match, seatId) {
+  const state = match.state || {};
+  const ownerId = getOwnerIdForSeat(seatId);
+
+  if (!ownerId) {
+    return {
+      ok: false,
+      message: "Invalid seat."
+    };
+  }
+
+  if (state.game_over) {
+    return {
+      ok: false,
+      message: "Game is already over."
+    };
+  }
+
+  if (state.current_player_id !== ownerId) {
+    return {
+      ok: false,
+      message: "Not your turn."
+    };
+  }
+
+  const current = state[state.current_player_id];
+
+  if (current) {
+    state.battle_log_messages.push(current.name + "'s turn ended.");
+  }
+
+  state.current_player_id = ownerId === "player1" ? "player2" : "player1";
+  state.turn_number = Number(state.turn_number || 1) + 1;
+  state.selecting_target = false;
+  state.selecting_hand_card = false;
+  state.pending_action_type = "none";
+  state.pending_card = null;
+  state.pending_attacker_index = -1;
+  state.selected_attacker_owner = "";
+  state.selected_attacker_index = -1;
+  state.pending_ability = {};
+
+  startServerTurn(state);
+
+  return {
+    ok: true,
+    state
+  };
+}
+
+function handleServerBattleAction(match, seatId, action, payload) {
+  if (!match) {
+    return {
+      ok: false,
+      message: "Match not found."
+    };
+  }
+
+  if (!match.state) {
+    return {
+      ok: false,
+      message: "Match state is missing."
+    };
+  }
+
+  switch (action) {
+    case "end_turn":
+      return endServerTurn(match, seatId);
+
+    case "surrender":
+      return finishMatchBySurrender(match, seatId);
+
+    default:
+      return {
+        ok: false,
+        message: "Node battle action not implemented yet: " + action
+      };
+  }
 }
 
 function broadcastMatchState(matchId, state) {
@@ -1086,35 +1435,68 @@ function destroyMatch(matchId, reason = "Match destroyed.") {
     return;
   }
 
-  const host = hosts.get(match.host_id);
+  const clientA = match.seats && match.seats.A
+    ? clients.get(match.seats.A.client_id)
+    : null;
 
-  if (host && host.current_match_id === matchId) {
-    host.current_match_id = "";
-    safeSend(host.ws, {
-      type: "host_destroy_match",
-      host_id: host.host_id,
-      match_id: matchId,
-      reason
-    });
-  }
-
-  const clientA = clients.get(match.seats.A.client_id);
-  const clientB = clients.get(match.seats.B.client_id);
+  const clientB = match.seats && match.seats.B
+    ? clients.get(match.seats.B.client_id)
+    : null;
 
   if (clientA) {
     clientA.match_id = "";
     clientA.seat_id = "";
+    clientA.queued = false;
   }
 
   if (clientB) {
     clientB.match_id = "";
     clientB.seat_id = "";
+    clientB.queued = false;
   }
 
   matches.delete(matchId);
+
+  console.log("[MATCH] destroyed", matchId, reason);
+
   tryMakeMatch();
 }
 
+function getSideFromDeckData(deckData) {
+  if (!deckData || typeof deckData !== "object") {
+    return "";
+  }
+
+  return String(deckData.side || "").toLowerCase();
+}
+
+function validateDeckData(deckData) {
+  if (!deckData || typeof deckData !== "object") {
+    return "deck_data is missing.";
+  }
+
+  const side = getSideFromDeckData(deckData);
+
+  if (side !== "human" && side !== "god") {
+    return "deck_data.side must be human or god.";
+  }
+
+  const cards = Array.isArray(deckData.card_ids)
+    ? deckData.card_ids
+    : Array.isArray(deckData.cards)
+      ? deckData.cards
+      : [];
+
+  if (cards.length <= 0) {
+    return "deck_data has no cards.";
+  }
+
+  return "";
+}
+
+// ============================================================================
+// WebSocket message handling
+// ============================================================================
 function handleClientMessage(client, message) {
   const type = String(message.type || "");
 
@@ -1209,21 +1591,19 @@ function handleClientMessage(client, message) {
         return;
       }
 
-      const host = hosts.get(match.host_id);
+      const result = handleServerBattleAction(match, seatId, action, payload);
 
-      if (!host || !host.ws || host.ws.readyState !== host.ws.OPEN) {
-        sendActionRejected(client.client_id, "Battle host is not available.");
+      if (!result.ok) {
+        sendActionRejected(client.client_id, result.message || "Action rejected.");
         return;
       }
 
-      safeSend(host.ws, {
-        type: "host_battle_action",
-        host_id: host.host_id,
-        match_id: matchId,
-        seat_id: seatId,
-        action,
-        payload
-      });
+      match.state = result.state || match.state;
+      broadcastMatchState(matchId, match.state);
+
+      if (match.state && match.state.game_over) {
+        destroyMatch(matchId, "Match finished.");
+      }
 
       return;
     }
@@ -1242,6 +1622,7 @@ function handleClientMessage(client, message) {
   }
 }
 
+// 互換用。Aルートではhost接続は戦闘に使わない。
 function handleHostMessage(host, message) {
   const type = String(message.type || "");
 
@@ -1256,139 +1637,7 @@ function handleHostMessage(host, message) {
 
       host.capacity = Number(message.capacity || 1);
 
-      console.log("[HOST] ready", host.host_id, "capacity=", host.capacity);
-
-      tryMakeMatch();
-      return;
-    }
-
-    case "host_match_created": {
-      const matchId = String(message.match_id || "");
-      const state = message.state && typeof message.state === "object"
-        ? message.state
-        : {};
-
-      if (!matches.has(matchId)) {
-        console.log("[HOST] match_created for unknown match", matchId);
-        return;
-      }
-
-      console.log("[HOST] match_created", matchId);
-
-      sendMatchFound(matchId, state);
-      return;
-    }
-
-    case "host_match_state": {
-      const matchId = String(message.match_id || "");
-      const state = message.state && typeof message.state === "object"
-        ? message.state
-        : {};
-
-      if (!matches.has(matchId)) {
-        console.log("[HOST] match_state for unknown match", matchId);
-        return;
-      }
-
-      broadcastMatchState(matchId, state);
-      return;
-    }
-
-    case "host_action_rejected": {
-      const matchId = String(message.match_id || "");
-      const seatId = String(message.seat_id || "");
-      const text = String(message.message || "Action rejected.");
-
-      const match = matches.get(matchId);
-
-      if (!match) {
-        return;
-      }
-
-      const seat = match.seats[seatId];
-
-      if (!seat) {
-        return;
-      }
-
-      const client = clients.get(seat.client_id);
-
-      if (!client) {
-        return;
-      }
-
-      safeSend(client.ws, {
-        type: "action_rejected",
-        match_id: matchId,
-        seat_id: seatId,
-        message: text
-      });
-
-      return;
-    }
-
-    case "host_match_finished": {
-      const matchId = String(message.match_id || "");
-      const state = message.state && typeof message.state === "object"
-        ? message.state
-        : {};
-
-      if (!matches.has(matchId)) {
-        return;
-      }
-
-      broadcastMatchState(matchId, state);
-      destroyMatch(matchId, "Match finished.");
-      return;
-    }
-
-    case "host_match_destroyed": {
-      const matchId = String(message.match_id || "");
-      const match = matches.get(matchId);
-
-      if (match) {
-        matches.delete(matchId);
-      }
-
-      if (host.current_match_id === matchId) {
-        host.current_match_id = "";
-      }
-
-      tryMakeMatch();
-      return;
-    }
-
-    case "host_error": {
-      const matchId = String(message.match_id || "");
-      const text = String(message.message || "Host error.");
-
-      console.log("[HOST ERROR]", host.host_id, matchId, text);
-
-      const match = matches.get(matchId);
-
-      if (match) {
-        const clientA = clients.get(match.seats.A.client_id);
-        const clientB = clients.get(match.seats.B.client_id);
-
-        if (clientA) {
-          safeSend(clientA.ws, {
-            type: "error",
-            message: text
-          });
-        }
-
-        if (clientB) {
-          safeSend(clientB.ws, {
-            type: "error",
-            message: text
-          });
-        }
-
-        destroyMatch(matchId, text);
-      }
-
-      host.current_match_id = "";
-      tryMakeMatch();
+      console.log("[HOST] ready ignored in Node authoritative mode", host.host_id);
       return;
     }
 
@@ -1397,7 +1646,7 @@ function handleHostMessage(host, message) {
     }
 
     default: {
-      console.log("[HOST] Unknown message", host.host_id, message);
+      console.log("[HOST] Ignored message in Node authoritative mode", host.host_id, message);
     }
   }
 }
@@ -1442,52 +1691,7 @@ function handleDisconnect(connection) {
   if (connection.role === "host") {
     const host = connection;
     console.log("[HOST] disconnected", host.host_id);
-
-    const affectedMatches = [];
-
-    for (const match of matches.values()) {
-      if (match.host_id === host.host_id) {
-        affectedMatches.push(match.match_id);
-      }
-    }
-
-    for (const matchId of affectedMatches) {
-      const match = matches.get(matchId);
-
-      if (!match) {
-        continue;
-      }
-
-      const clientA = clients.get(match.seats.A.client_id);
-      const clientB = clients.get(match.seats.B.client_id);
-
-      if (clientA) {
-        safeSend(clientA.ws, {
-          type: "opponent_left",
-          match_id: matchId,
-          message: "Battle host disconnected."
-        });
-
-        clientA.match_id = "";
-        clientA.seat_id = "";
-      }
-
-      if (clientB) {
-        safeSend(clientB.ws, {
-          type: "opponent_left",
-          match_id: matchId,
-          message: "Battle host disconnected."
-        });
-
-        clientB.match_id = "";
-        clientB.seat_id = "";
-      }
-
-      matches.delete(matchId);
-    }
-
     hosts.delete(host.host_id);
-    tryMakeMatch();
   }
 }
 
@@ -1509,11 +1713,12 @@ wss.on("connection", (ws, req) => {
 
     hosts.set(hostId, host);
 
-    console.log("[HOST] connected", hostId);
+    console.log("[HOST] connected but unused in Node authoritative mode", hostId);
 
     safeSend(ws, {
       type: "host_welcome",
-      host_id: hostId
+      host_id: hostId,
+      mode: "node_authoritative"
     });
 
     ws.on("message", (data) => {
@@ -1581,5 +1786,5 @@ wss.on("connection", (ws, req) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[SERVER] Authoritative gateway + save API listening on port ${PORT}`);
+  console.log(`[SERVER] Node authoritative gateway + save API listening on port ${PORT}`);
 });
