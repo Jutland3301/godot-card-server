@@ -514,6 +514,202 @@ async function handleOpenPack(req, res) {
   }
 }
 
+async function handleGetDecks(req, res) {
+  if (!requireDb(res)) return;
+
+  const userId = getBearerUserId(req);
+
+  if (userId <= 0) {
+    sendJson(res, 401, {
+      ok: false,
+      error: "missing or invalid token"
+    });
+    return;
+  }
+
+  try {
+    const deckResult = await pool.query(
+      `
+      SELECT id, name, side, created_at, updated_at
+      FROM decks
+      WHERE user_id = $1
+      ORDER BY updated_at DESC, id DESC
+      `,
+      [userId]
+    );
+
+    const decks = [];
+
+    for (const deck of deckResult.rows) {
+      const cardResult = await pool.query(
+        `
+        SELECT card_id, count
+        FROM deck_cards
+        WHERE deck_id = $1
+        ORDER BY card_id ASC
+        `,
+        [deck.id]
+      );
+
+      decks.push({
+        id: deck.id,
+        name: deck.name,
+        side: deck.side,
+        created_at: deck.created_at,
+        updated_at: deck.updated_at,
+        cards: cardResult.rows
+      });
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      decks: decks
+    });
+  } catch (e) {
+    console.error("get decks error:", e);
+    sendJson(res, 500, {
+      ok: false,
+      error: "failed to load decks",
+      detail: e.message
+    });
+  }
+}
+
+
+async function handleSaveDeck(req, res) {
+  if (!requireDb(res)) return;
+
+  const userId = getBearerUserId(req);
+
+  if (userId <= 0) {
+    sendJson(res, 401, {
+      ok: false,
+      error: "missing or invalid token"
+    });
+    return;
+  }
+
+  let body = {};
+
+  try {
+    body = await readBody(req);
+  } catch (e) {
+    sendJson(res, 400, {
+      ok: false,
+      error: e.message
+    });
+    return;
+  }
+
+  const deckId = Number(body.deck_id || 0);
+  const name = String(body.name || "New Deck").trim();
+  const side = String(body.side || "human").trim();
+  const cards = body.cards;
+
+  if (!(cards instanceof Array)) {
+    sendJson(res, 400, {
+      ok: false,
+      error: "cards must be an array"
+    });
+    return;
+  }
+
+  try {
+    let savedDeck = null;
+
+    if (Number.isInteger(deckId) && deckId > 0) {
+      const updateResult = await pool.query(
+        `
+        UPDATE decks
+        SET name = $1,
+            side = $2,
+            updated_at = NOW()
+        WHERE id = $3 AND user_id = $4
+        RETURNING id, name, side, created_at, updated_at
+        `,
+        [name, side, deckId, userId]
+      );
+
+      if (updateResult.rows.length === 0) {
+        sendJson(res, 404, {
+          ok: false,
+          error: "deck not found"
+        });
+        return;
+      }
+
+      savedDeck = updateResult.rows[0];
+
+      await pool.query(
+        `
+        DELETE FROM deck_cards
+        WHERE deck_id = $1
+        `,
+        [savedDeck.id]
+      );
+    } else {
+      const insertResult = await pool.query(
+        `
+        INSERT INTO decks (user_id, name, side)
+        VALUES ($1, $2, $3)
+        RETURNING id, name, side, created_at, updated_at
+        `,
+        [userId, name, side]
+      );
+
+      savedDeck = insertResult.rows[0];
+    }
+
+    for (const item of cards) {
+      const cardId = String(item.card_id || "").trim();
+      const count = Number(item.count || 0);
+
+      if (cardId == "" || !Number.isInteger(count) || count <= 0) {
+        continue;
+      }
+
+      await pool.query(
+        `
+        INSERT INTO deck_cards (deck_id, card_id, count)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (deck_id, card_id)
+        DO UPDATE SET count = EXCLUDED.count
+        `,
+        [savedDeck.id, cardId, count]
+      );
+    }
+
+    const cardResult = await pool.query(
+      `
+      SELECT card_id, count
+      FROM deck_cards
+      WHERE deck_id = $1
+      ORDER BY card_id ASC
+      `,
+      [savedDeck.id]
+    );
+
+    sendJson(res, 200, {
+      ok: true,
+      deck: {
+        id: savedDeck.id,
+        name: savedDeck.name,
+        side: savedDeck.side,
+        created_at: savedDeck.created_at,
+        updated_at: savedDeck.updated_at,
+        cards: cardResult.rows
+      }
+    });
+  } catch (e) {
+    console.error("save deck error:", e);
+    sendJson(res, 500, {
+      ok: false,
+      error: "failed to save deck",
+      detail: e.message
+    });
+  }
+}
+
 async function handleDbTest(req, res) {
   if (!requireDb(res)) return;
 
@@ -576,6 +772,12 @@ const server = http.createServer(async (req, res) => {
     await handleCollection(req, res);
     return;
   }
+
+  if (req.method === "POST" && url.pathname === "/open_pack") {
+    await handleOpenPack(req, res);
+    return;
+  }
+  
 
   sendJson(res, 404, {
     ok: false,
