@@ -1164,10 +1164,22 @@ function sendMatchFound(matchId) {
   const match = matches.get(matchId);
 
   if (!match) {
+    console.error("[MATCH FOUND SEND ERROR] match not found", matchId);
     return;
   }
 
-  const publicState = getPublicBattleState(match);
+  let publicState = {};
+
+  try {
+    publicState = getPublicBattleState(match);
+  } catch (error) {
+    console.error(
+      "[MATCH FOUND PUBLIC STATE ERROR]",
+      matchId,
+      error && error.stack ? error.stack : error
+    );
+    publicState = match.state || {};
+  }
 
   const clientA = clients.get(match.seats.A.client_id);
   const clientB = clients.get(match.seats.B.client_id);
@@ -1175,24 +1187,66 @@ function sendMatchFound(matchId) {
   const sideA = match.seats.A.side;
   const sideB = match.seats.B.side;
 
-  if (clientA) {
+  const payloadA = {
+    type: "match_found",
+    match_id: matchId,
+    seat_id: "A",
+    side: sideA,
+    opponent_side: sideB,
+    state: publicState
+  };
+
+  const payloadB = {
+    type: "match_found",
+    match_id: matchId,
+    seat_id: "B",
+    side: sideB,
+    opponent_side: sideA,
+    state: publicState
+  };
+
+  let sentA = false;
+  let sentB = false;
+
+  if (clientA && clientA.ws) {
+    sentA = safeSend(clientA.ws, payloadA);
+  }
+
+  if (clientB && clientB.ws) {
+    sentB = safeSend(clientB.ws, payloadB);
+  }
+
+  console.log(
+    "[MATCH FOUND SEND]",
+    matchId,
+    "A_client=",
+    match.seats.A.client_id,
+    "A_ws=",
+    clientA && clientA.ws ? clientA.ws.readyState : "missing",
+    "A_sent=",
+    sentA,
+    "B_client=",
+    match.seats.B.client_id,
+    "B_ws=",
+    clientB && clientB.ws ? clientB.ws.readyState : "missing",
+    "B_sent=",
+    sentB
+  );
+
+  if (sentA) {
     safeSend(clientA.ws, {
-      type: "match_found",
+      type: "match_state",
       match_id: matchId,
       seat_id: "A",
-      side: sideA,
-      opponent_side: sideB,
       state: publicState
     });
   }
 
-  if (clientB) {
+  if (sentB) {
     safeSend(clientB.ws, {
-      type: "match_found",
+      type: "match_state",
       match_id: matchId,
       seat_id: "B",
-      side: sideB,
-      opponent_side: sideA,
       state: publicState
     });
   }
