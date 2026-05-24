@@ -637,7 +637,7 @@ async function handleRankedProfile(req, res) {
 
   const result = await dbQuery(
     `
-    SELECT user_id, rating, rank_points, wins, losses
+    SELECT user_id, rating, rank_points, wins, losses, draws
     FROM rank_profiles
     WHERE user_id = $1
     LIMIT 1
@@ -685,7 +685,7 @@ async function handleRankedResult(req, res) {
   );
 
   const beforeResult = await dbQuery(
-    "SELECT rating, rank_points, wins, losses FROM rank_profiles WHERE user_id = $1 LIMIT 1",
+    "SELECT rating, rank_points, wins, losses, draws FROM rank_profiles WHERE user_id = $1 LIMIT 1",
     [user.id]
   );
 
@@ -732,7 +732,8 @@ async function handleRankedResult(req, res) {
       `
       UPDATE rank_profiles
       SET rating = $2,
-          rank_points = GREATEST(0, rank_points + $3)
+          rank_points = GREATEST(0, rank_points + $3),
+          draws = draws + 1
       WHERE user_id = $1
       `,
       [user.id, ratingAfter, rankDelta]
@@ -741,20 +742,21 @@ async function handleRankedResult(req, res) {
 
   await dbQuery(
     `
-    INSERT INTO match_logs (player1_id, player2_id, winner_id, loser_id)
-    VALUES ($1, $2, $3, $4)
+    INSERT INTO match_logs (player1_id, player2_id, winner_id, loser_id, result)
+    VALUES ($1, $2, $3, $4, $5)
     `,
     [
       user.id,
       opponentId > 0 ? opponentId : null,
       resultText === "win" ? user.id : null,
-      resultText === "loss" ? user.id : null
+      resultText === "loss" ? user.id : null,
+      resultText
     ]
   );
 
   const profileResult = await dbQuery(
     `
-    SELECT user_id, rating, rank_points, wins, losses
+    SELECT user_id, rating, rank_points, wins, losses, draws
     FROM rank_profiles
     WHERE user_id = $1
     LIMIT 1
