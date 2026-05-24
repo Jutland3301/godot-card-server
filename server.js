@@ -1,6 +1,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 const { Pool } = require("pg");
+const { makeCardFromId, getAvailableCardIds } = require("./cards_database");
 
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || "";
@@ -12,252 +13,7 @@ const MANA_GAIN_PER_TURN = 1;
 const MAX_MANA = 10;
 const TURN_TIME_LIMIT_SECONDS = 45.0;
 const MAX_HAND_SIZE = 7;
-const CARD_DATABASE = {
-  absolute_loyalty: {
-    name: "Absolute Loyalty",
-    type: "spell",
-    cost: 6,
-    power: 0,
-    effect_id: "buff_deck_trait",
-    target_type: "none",
-    description: "Give all Soldier units in your deck +X/+X. X is the number of Soldier units on your field.",
-    attack: 0,
-    hp: 0,
-    armor: 0,
-    keywords: [],
-    tags: ["basic", "buff"],
-    traits: [],
-    side: "human",
-    abilities: [
-      {
-        effect: "buff_deck_trait",
-        trait: "soldier",
-        attack: 1,
-        hp: 1
-      }
-    ]
-  },
-
-  angelic_singer: {
-    name: "Angelic Singer",
-    type: "unit",
-    cost: 7,
-    power: 0,
-    effect_id: "none",
-    target_type: "none",
-    description: "Music. Untrickable. Turn End and Turn Start: All allied Music units gain +1/+1.",
-    attack: 4,
-    hp: 4,
-    armor: 0,
-    keywords: ["untrickable"],
-    tags: ["basic", "music", "engine", "buffer"],
-    traits: ["music"],
-    side: "human",
-    abilities: [
-      {
-        trigger: "turn_end",
-        effect: "buff_trait",
-        target: "friendly_units_with_trait",
-        trait: "music",
-        attack: 1,
-        hp: 1
-      },
-      {
-        trigger: "turn_start",
-        effect: "buff_trait",
-        target: "friendly_units_with_trait",
-        trait: "music",
-        attack: 1,
-        hp: 1
-      }
-    ]
-  },
-
-  archery_lessons: {
-    name: "Archery Lessons",
-    type: "spell",
-    cost: 2,
-    power: 0,
-    effect_id: "add_keyword",
-    target_type: "any_friendly",
-    description: "Give a friendly Soldier unit Ricochet.",
-    attack: 0,
-    hp: 0,
-    armor: 0,
-    keywords: [],
-    tags: ["basic", "training"],
-    traits: [],
-    side: "human",
-    abilities: [
-      {
-        effect: "add_keyword",
-        target: "friendly_unit_with_trait",
-        trait: "soldier",
-        keyword: "ricochet"
-      }
-    ]
-  },
-
-  armored_knight: {
-    name: "Armored Knight",
-    type: "unit",
-    cost: 3,
-    power: 0,
-    effect_id: "none",
-    target_type: "none",
-    description: "Armored 1",
-    attack: 3,
-    hp: 2,
-    armor: 1,
-    keywords: [],
-    tags: ["basic", "defender", "armored"],
-    traits: ["soldier"],
-    side: "human",
-    abilities: []
-  },
-
-  autocannon: {
-    name: "Autocannon",
-    type: "unit",
-    cost: 3,
-    power: 0,
-    effect_id: "none",
-    target_type: "none",
-    description: "Gadget. Immobile. When an ally unit attacks, deal 2 damage to the enemy leader.",
-    attack: 1,
-    hp: 4,
-    armor: 0,
-    keywords: ["immobile"],
-    tags: ["basic", "gadget", "engine"],
-    traits: ["gadget"],
-    side: "human",
-    abilities: [
-      {
-        trigger: "on_ally_unit_attack",
-        effect: "damage_enemy_leader_on_ally_attack",
-        amount: 2
-      }
-    ]
-  },
-
-  arrogant_apprentice: {
-    name: "Arrogant Apprentice",
-    type: "unit",
-    cost: 2,
-    power: 0,
-    effect_id: "none",
-    target_type: "none",
-    description: "Turn start: Draw a random spell from your deck.",
-    attack: 0,
-    hp: 4,
-    armor: 0,
-    keywords: [],
-    tags: ["basic", "draw", "engine", "mage"],
-    traits: ["mage"],
-    side: "god",
-    abilities: [
-      {
-        trigger: "turn_start",
-        effect: "draw_random_spell_from_deck",
-        amount: 1
-      }
-    ]
-  },
-
-  cauldron: {
-    name: "Cauldron",
-    type: "unit",
-    cost: 5,
-    power: 0,
-    effect_id: "none",
-    target_type: "none",
-    description: "Mage. Taunt. When you play a spell: This gains +1/+1.",
-    attack: 3,
-    hp: 6,
-    armor: 0,
-    keywords: ["taunt"],
-    tags: ["basic", "mage", "engine", "taunt"],
-    traits: ["mage"],
-    side: "god",
-    abilities: [
-      {
-        trigger: "on_spell_played",
-        effect: "buff_self",
-        attack: 1,
-        hp: 1,
-        only_friendly: true
-      }
-    ]
-  },
-
-  circus_of_illusion: {
-    name: "Circus of Illusion",
-    type: "spell",
-    cost: 6,
-    power: 2,
-    effect_id: "resurrect_trait_units_from_graveyard",
-    target_type: "none",
-    description: "Phantom. Resurrect 2 Phantom units from your graveyard. They gain Haste.",
-    attack: 0,
-    hp: 0,
-    armor: 0,
-    keywords: [],
-    tags: ["basic", "phantom", "spell", "resurrect"],
-    traits: ["phantom"],
-    side: "god",
-    abilities: [
-      {
-        effect: "resurrect_trait_units_from_graveyard",
-        trait: "phantom",
-        amount: 2,
-        keywords: ["haste"]
-      }
-    ]
-  },
-
-  dreamseeking_pallet: {
-    name: "Dreamseeking Pallet",
-    type: "spell",
-    cost: 1,
-    power: 0,
-    effect_id: "damage_by_board_trait_count",
-    target_type: "any_unit",
-    description: "Deal X damage to a unit. X is the number of different traits on the board.",
-    attack: 0,
-    hp: 0,
-    armor: 0,
-    keywords: [],
-    tags: ["basic", "damage", "trait"],
-    traits: [],
-    side: "god",
-    abilities: []
-  },
-
-  eigenspirits: {
-    name: "Eigenspirits",
-    type: "unit",
-    cost: 10,
-    power: 0,
-    effect_id: "none",
-    target_type: "none",
-    description: "Haste. When destroyed: Summon a copy of this card with +2/+2.",
-    attack: 1,
-    hp: 1,
-    armor: 0,
-    keywords: ["haste"],
-    tags: ["basic", "death", "scaling"],
-    traits: [],
-    side: "god",
-    abilities: [
-      {
-        trigger: "when_destroyed",
-        effect: "copy_self_to_board",
-        attack: 2,
-        hp: 2
-      }
-    ]
-  }
-};
+const MAX_BOARD_SIZE = 5;
 
 const pool = DATABASE_URL
   ? new Pool({
@@ -273,7 +29,7 @@ let nextHostNumber = 1;
 let nextMatchNumber = 1;
 
 const clients = new Map();
-const hosts = new Map(); // 互換用に残す。Node authoritative戦闘では使わない。
+const hosts = new Map(); // 互換用。Node authoritative戦闘では使わない。
 const queue = [];
 const matches = new Map();
 
@@ -306,6 +62,10 @@ function safeParse(text) {
   } catch (_error) {
     return null;
   }
+}
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 
 function sendError(ws, message) {
@@ -472,10 +232,7 @@ async function handleRegister(req, res) {
   const body = await readJsonBody(req);
 
   if (body === null) {
-    sendJson(res, 400, {
-      ok: false,
-      error: "Invalid JSON"
-    });
+    sendJson(res, 400, { ok: false, error: "Invalid JSON" });
     return;
   }
 
@@ -483,18 +240,12 @@ async function handleRegister(req, res) {
   const password = normalizePassword(body.password);
 
   if (username.length < 3) {
-    sendJson(res, 400, {
-      ok: false,
-      error: "Username must be at least 3 characters."
-    });
+    sendJson(res, 400, { ok: false, error: "Username must be at least 3 characters." });
     return;
   }
 
   if (password.length < 3) {
-    sendJson(res, 400, {
-      ok: false,
-      error: "Password must be at least 3 characters."
-    });
+    sendJson(res, 400, { ok: false, error: "Password must be at least 3 characters." });
     return;
   }
 
@@ -513,18 +264,12 @@ async function handleRegister(req, res) {
 
     sendJson(res, 200, {
       ok: true,
-      user: {
-        id: user.id,
-        username: user.username
-      },
+      user: { id: user.id, username: user.username },
       token: makeUserToken(user.id)
     });
   } catch (error) {
     if (String(error.message).includes("duplicate") || error.code === "23505") {
-      sendJson(res, 409, {
-        ok: false,
-        error: "Username already exists."
-      });
+      sendJson(res, 409, { ok: false, error: "Username already exists." });
       return;
     }
 
@@ -536,10 +281,7 @@ async function handleLogin(req, res) {
   const body = await readJsonBody(req);
 
   if (body === null) {
-    sendJson(res, 400, {
-      ok: false,
-      error: "Invalid JSON"
-    });
+    sendJson(res, 400, { ok: false, error: "Invalid JSON" });
     return;
   }
 
@@ -552,20 +294,14 @@ async function handleLogin(req, res) {
   );
 
   if (result.rows.length <= 0) {
-    sendJson(res, 401, {
-      ok: false,
-      error: "Invalid username or password."
-    });
+    sendJson(res, 401, { ok: false, error: "Invalid username or password." });
     return;
   }
 
   const user = result.rows[0];
 
   if (String(user.password) !== password) {
-    sendJson(res, 401, {
-      ok: false,
-      error: "Invalid username or password."
-    });
+    sendJson(res, 401, { ok: false, error: "Invalid username or password." });
     return;
   }
 
@@ -576,10 +312,7 @@ async function handleLogin(req, res) {
 
   sendJson(res, 200, {
     ok: true,
-    user: {
-      id: user.id,
-      username: user.username
-    },
+    user: { id: user.id, username: user.username },
     token: makeUserToken(user.id)
   });
 }
@@ -601,10 +334,7 @@ async function handleCollection(req, res) {
     [user.id]
   );
 
-  sendJson(res, 200, {
-    ok: true,
-    cards: result.rows
-  });
+  sendJson(res, 200, { ok: true, cards: result.rows });
 }
 
 async function handleOpenPack(req, res) {
@@ -617,39 +347,25 @@ async function handleOpenPack(req, res) {
   const body = await readJsonBody(req);
 
   if (body === null) {
-    sendJson(res, 400, {
-      ok: false,
-      error: "Invalid JSON"
-    });
+    sendJson(res, 400, { ok: false, error: "Invalid JSON" });
     return;
   }
 
   const packType = String(body.pack_type || body.packType || "test");
   const count = Math.max(1, Math.min(20, Number(body.count || 5)));
 
-  const cardsResult = await dbQuery(
-    `
-    SELECT card_id
-    FROM cards
-    WHERE enabled = TRUE
-    ORDER BY card_id ASC
-    `
-  );
+  const availableCardIds = getAvailableCardIds();
 
-  if (cardsResult.rows.length <= 0) {
-    sendJson(res, 400, {
-      ok: false,
-      error: "No enabled cards in cards table."
-    });
+  if (availableCardIds.length <= 0) {
+    sendJson(res, 400, { ok: false, error: "No cards available in CardLibrary.gd." });
     return;
   }
 
-  const poolCards = cardsResult.rows.map((row) => String(row.card_id));
   const opened = [];
 
   for (let i = 0; i < count; i++) {
-    const index = Math.floor(Math.random() * poolCards.length);
-    opened.push(poolCards[index]);
+    const index = Math.floor(Math.random() * availableCardIds.length);
+    opened.push(availableCardIds[index]);
   }
 
   const client = await pool.connect();
@@ -757,10 +473,7 @@ async function handleGetDecks(req, res) {
     });
   }
 
-  sendJson(res, 200, {
-    ok: true,
-    decks
-  });
+  sendJson(res, 200, { ok: true, decks });
 }
 
 async function handleSaveDeck(req, res) {
@@ -773,10 +486,7 @@ async function handleSaveDeck(req, res) {
   const body = await readJsonBody(req);
 
   if (body === null) {
-    sendJson(res, 400, {
-      ok: false,
-      error: "Invalid JSON"
-    });
+    sendJson(res, 400, { ok: false, error: "Invalid JSON" });
     return;
   }
 
@@ -792,18 +502,12 @@ async function handleSaveDeck(req, res) {
   const cardIds = cardSource.map((value) => String(value || "").trim()).filter(Boolean);
 
   if (!name) {
-    sendJson(res, 400, {
-      ok: false,
-      error: "Deck name is empty."
-    });
+    sendJson(res, 400, { ok: false, error: "Deck name is empty." });
     return;
   }
 
   if (cardIds.length <= 0) {
-    sendJson(res, 400, {
-      ok: false,
-      error: "Deck has no cards."
-    });
+    sendJson(res, 400, { ok: false, error: "Deck has no cards." });
     return;
   }
 
@@ -844,10 +548,7 @@ async function handleSaveDeck(req, res) {
       finalDeckId = insertResult.rows[0].id;
     }
 
-    await client.query(
-      "DELETE FROM deck_cards WHERE deck_id = $1",
-      [finalDeckId]
-    );
+    await client.query("DELETE FROM deck_cards WHERE deck_id = $1", [finalDeckId]);
 
     for (const [cardId, amount] of cardCounts.entries()) {
       await client.query(
@@ -902,10 +603,7 @@ async function handleRankedProfile(req, res) {
     [user.id]
   );
 
-  sendJson(res, 200, {
-    ok: true,
-    profile: result.rows[0]
-  });
+  sendJson(res, 200, { ok: true, profile: result.rows[0] });
 }
 
 async function handleRankedResult(req, res) {
@@ -918,10 +616,7 @@ async function handleRankedResult(req, res) {
   const body = await readJsonBody(req);
 
   if (body === null) {
-    sendJson(res, 400, {
-      ok: false,
-      error: "Invalid JSON"
-    });
+    sendJson(res, 400, { ok: false, error: "Invalid JSON" });
     return;
   }
 
@@ -929,10 +624,7 @@ async function handleRankedResult(req, res) {
   const opponentId = Number(body.opponent_id || 0);
 
   if (resultText !== "win" && resultText !== "loss" && resultText !== "draw") {
-    sendJson(res, 400, {
-      ok: false,
-      error: "result must be win, loss, or draw."
-    });
+    sendJson(res, 400, { ok: false, error: "result must be win, loss, or draw." });
     return;
   }
 
@@ -1043,21 +735,19 @@ async function handleHttp(req, res) {
     if (path === "/" || path === "/health") {
       sendJson(res, 200, {
         ok: true,
-        service: "godot-card-node-authoritative-step1",
+        service: "godot-card-node-authoritative-step2",
         db: !!pool,
         clients: clients.size,
         hosts: hosts.size,
         queued: queue.length,
-        matches: matches.size
+        matches: matches.size,
+        card_count: getAvailableCardIds().length
       });
       return;
     }
 
     if (!pool) {
-      sendJson(res, 500, {
-        ok: false,
-        error: "DATABASE_URL is not set."
-      });
+      sendJson(res, 500, { ok: false, error: "DATABASE_URL is not set." });
       return;
     }
 
@@ -1101,16 +791,10 @@ async function handleHttp(req, res) {
       return;
     }
 
-    sendJson(res, 404, {
-      ok: false,
-      error: "Not found"
-    });
+    sendJson(res, 404, { ok: false, error: "Not found" });
   } catch (error) {
     console.log("[HTTP ERROR]", error);
-    sendJson(res, 500, {
-      ok: false,
-      error: error.message
-    });
+    sendJson(res, 500, { ok: false, error: error.message });
   }
 }
 
@@ -1118,7 +802,7 @@ const server = http.createServer(handleHttp);
 const wss = new WebSocketServer({ server });
 
 // ============================================================================
-// Node authoritative battle helpers - Step 1
+// Node authoritative battle helpers
 // ============================================================================
 function removeClientFromQueue(clientId) {
   for (let i = queue.length - 1; i >= 0; i--) {
@@ -1126,6 +810,48 @@ function removeClientFromQueue(clientId) {
       queue.splice(i, 1);
     }
   }
+}
+
+function getSideFromDeckData(deckData) {
+  if (!deckData || typeof deckData !== "object") {
+    return "";
+  }
+
+  return String(deckData.side || "").toLowerCase();
+}
+
+function getCardIdsFromDeckData(deckData) {
+  if (!deckData || typeof deckData !== "object") {
+    return [];
+  }
+
+  const source = Array.isArray(deckData.card_ids)
+    ? deckData.card_ids
+    : Array.isArray(deckData.cards)
+      ? deckData.cards
+      : [];
+
+  return source.map((value) => String(value || "").trim()).filter(Boolean);
+}
+
+function validateDeckData(deckData) {
+  if (!deckData || typeof deckData !== "object") {
+    return "deck_data is missing.";
+  }
+
+  const side = getSideFromDeckData(deckData);
+
+  if (side !== "human" && side !== "god") {
+    return "deck_data.side must be human or god.";
+  }
+
+  const cards = getCardIdsFromDeckData(deckData);
+
+  if (cards.length <= 0) {
+    return "deck_data has no cards.";
+  }
+
+  return "";
 }
 
 function findQueuePair() {
@@ -1233,22 +959,6 @@ function tryMakeMatch() {
   }
 }
 
-function getCardIdsFromDeckData(deckData) {
-  if (!deckData || typeof deckData !== "object") {
-    return [];
-  }
-
-  const source = Array.isArray(deckData.card_ids)
-    ? deckData.card_ids
-    : Array.isArray(deckData.cards)
-      ? deckData.cards
-      : [];
-
-  return source
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-}
-
 function shuffleArray(array) {
   for (let i = array.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -1260,93 +970,9 @@ function shuffleArray(array) {
   return array;
 }
 
-function makeInitialCardState(cardId) {
-  const cleanCardId = String(cardId || "").trim();
-  const data = CARD_DATABASE[cleanCardId] || null;
-
-  if (!data) {
-    console.log("[CARD DB] Unknown card_id:", cleanCardId);
-
-    return {
-      card_id: cleanCardId,
-      card_name: cleanCardId,
-      display_name: cleanCardId,
-      cost: 0,
-      power: 0,
-      card_type: "unit",
-      target_type: "none",
-      effect_id: "none",
-      trigger_id: "none",
-
-      attack: 0,
-      hp: 1,
-      max_hp: 1,
-      armor: 0,
-      base_attack: 0,
-      base_hp: 1,
-
-      side: "neutral",
-      traits: [],
-      keywords: [],
-      tags: [],
-      abilities: [],
-
-      can_attack: false,
-      exhausted: true,
-      summoned_this_turn: false,
-      has_attacked_this_turn: false,
-      attacks_this_turn: 0,
-      max_attacks_per_turn: 1,
-
-      temporary_keywords: {},
-      once_per_turn_flags: {}
-    };
-  }
-
-  const attack = Number(data.attack || 0);
-  const hp = Number(data.hp || 0);
-
-  return {
-    card_id: cleanCardId,
-    card_name: String(data.name || cleanCardId),
-    display_name: String(data.name || cleanCardId),
-    cost: Number(data.cost || 0),
-    power: Number(data.power || 0),
-    card_type: String(data.type || "spell"),
-    target_type: String(data.target_type || "none"),
-    effect_id: String(data.effect_id || "none"),
-    trigger_id: String(data.trigger_id || "none"),
-    description: String(data.description || ""),
-
-    attack,
-    hp,
-    max_hp: hp,
-    armor: Number(data.armor || 0),
-    base_attack: attack,
-    base_hp: hp,
-
-    side: String(data.side || "human"),
-    traits: Array.isArray(data.traits) ? data.traits.map(String) : [],
-    keywords: Array.isArray(data.keywords) ? data.keywords.map(String) : [],
-    tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
-    abilities: Array.isArray(data.abilities)
-      ? JSON.parse(JSON.stringify(data.abilities))
-      : [],
-
-    can_attack: false,
-    exhausted: true,
-    summoned_this_turn: false,
-    has_attacked_this_turn: false,
-    attacks_this_turn: 0,
-    max_attacks_per_turn: Number(data.max_attacks_per_turn || 1),
-
-    temporary_keywords: {},
-    once_per_turn_flags: {}
-  };
-}
 function makeInitialPlayerState(ownerId, deckData) {
   const cardIds = getCardIdsFromDeckData(deckData);
-  const deck = shuffleArray(cardIds.map((cardId) => makeInitialCardState(cardId)));
+  const deck = shuffleArray(cardIds.map((cardId) => makeCardFromId(cardId)));
 
   return {
     owner_id: ownerId,
@@ -1363,6 +989,7 @@ function makeInitialPlayerState(ownerId, deckData) {
     board: [],
     graveyard: [],
 
+    last_spell_cast: null,
     scholar_cards_played_this_game: 0,
     inflation_counters: 0
   };
@@ -1400,6 +1027,260 @@ function drawOneCard(player) {
   return card;
 }
 
+function drawCards(player, amount) {
+  for (let i = 0; i < amount; i++) {
+    drawOneCard(player);
+  }
+}
+
+function getOwnerIdForSeat(seatId) {
+  if (seatId === "A") {
+    return "player1";
+  }
+
+  if (seatId === "B") {
+    return "player2";
+  }
+
+  return "";
+}
+
+function getEnemyOwnerId(ownerId) {
+  if (ownerId === "player1") {
+    return "player2";
+  }
+
+  if (ownerId === "player2") {
+    return "player1";
+  }
+
+  return "";
+}
+
+function getPlayerForOwnerId(state, ownerId) {
+  if (!state) {
+    return null;
+  }
+
+  if (ownerId === "player1") {
+    return state.player1 || null;
+  }
+
+  if (ownerId === "player2") {
+    return state.player2 || null;
+  }
+
+  return null;
+}
+
+function getOpponentForOwnerId(state, ownerId) {
+  return getPlayerForOwnerId(state, getEnemyOwnerId(ownerId));
+}
+
+function ensureStateCollections(state) {
+  if (!Array.isArray(state.battle_log_messages)) {
+    state.battle_log_messages = [];
+  }
+}
+
+function addBattleLog(state, message) {
+  ensureStateCollections(state);
+  const text = String(message || "");
+  state.status_message = text;
+  state.battle_log_messages.push(text);
+}
+
+function hasKeyword(card, keyword) {
+  if (!card || !Array.isArray(card.keywords)) {
+    return false;
+  }
+
+  return card.keywords.includes(keyword);
+}
+
+function addKeyword(card, keyword) {
+  if (!card) {
+    return;
+  }
+
+  if (!Array.isArray(card.keywords)) {
+    card.keywords = [];
+  }
+
+  if (!card.keywords.includes(keyword)) {
+    card.keywords.push(keyword);
+  }
+}
+
+function removeKeyword(card, keyword) {
+  if (!card || !Array.isArray(card.keywords)) {
+    return;
+  }
+
+  card.keywords = card.keywords.filter((value) => value !== keyword);
+}
+
+function hasTrait(card, trait) {
+  if (!card || !Array.isArray(card.traits)) {
+    return false;
+  }
+
+  return card.traits.includes(trait);
+}
+
+function changeStats(card, attackDelta, hpDelta) {
+  if (!card) {
+    return;
+  }
+
+  const attackChange = Number(attackDelta || 0);
+  const hpChange = Number(hpDelta || 0);
+
+  card.attack = Number(card.attack || 0) + attackChange;
+  card.hp = Number(card.hp || 0) + hpChange;
+  card.max_hp = Number(card.max_hp || 0) + hpChange;
+  card.base_attack = Number(card.base_attack || 0) + attackChange;
+  card.base_hp = Number(card.base_hp || 0) + hpChange;
+}
+
+function damageCard(card, amount) {
+  if (!card) {
+    return 0;
+  }
+
+  if (hasKeyword(card, "invincible")) {
+    return 0;
+  }
+
+  let remaining = Math.max(0, Number(amount || 0));
+  let actualDamage = 0;
+  const armor = Math.max(0, Number(card.armor || 0));
+
+  if (armor > 0 && remaining > 0) {
+    const blocked = Math.min(armor, remaining);
+    card.armor = armor - blocked;
+    remaining -= blocked;
+  }
+
+  if (remaining > 0) {
+    card.hp = Number(card.hp || 0) - remaining;
+    actualDamage += remaining;
+  }
+
+  return actualDamage;
+}
+
+function healCard(card, amount) {
+  if (!card) {
+    return 0;
+  }
+
+  const before = Number(card.hp || 0);
+  const maxHp = Number(card.max_hp || before);
+  card.hp = Math.min(maxHp, before + Math.max(0, Number(amount || 0)));
+  return card.hp - before;
+}
+
+function damagePlayer(player, amount) {
+  if (!player) {
+    return 0;
+  }
+
+  const damage = Math.max(0, Number(amount || 0));
+  player.hp = Number(player.hp || 0) - damage;
+  return damage;
+}
+
+function healPlayer(player, amount) {
+  if (!player) {
+    return 0;
+  }
+
+  const before = Number(player.hp || 0);
+  const maxHp = Number(player.max_hp || before);
+  player.hp = Math.min(maxHp, before + Math.max(0, Number(amount || 0)));
+  return player.hp - before;
+}
+
+function removeDeadUnits(state) {
+  const destroyed = [];
+
+  for (const ownerId of ["player1", "player2"]) {
+    const player = getPlayerForOwnerId(state, ownerId);
+
+    if (!player || !Array.isArray(player.board)) {
+      continue;
+    }
+
+    const survivors = [];
+
+    for (const unit of player.board) {
+      if (unit && Number(unit.hp || 0) <= 0 && !hasKeyword(unit, "invincible")) {
+        player.graveyard.push(unit);
+        destroyed.push({ ownerId, unit });
+      } else {
+        survivors.push(unit);
+      }
+    }
+
+    player.board = survivors;
+  }
+
+  return destroyed;
+}
+
+function checkGameOver(state) {
+  if (!state || state.game_over) {
+    return;
+  }
+
+  const player1 = state.player1;
+  const player2 = state.player2;
+
+  if (!player1 || !player2) {
+    return;
+  }
+
+  if (Number(player1.hp || 0) <= 0 && Number(player2.hp || 0) <= 0) {
+    state.game_over = true;
+    state.turn_timer_active = false;
+    addBattleLog(state, "Both leaders were defeated. Draw.");
+    return;
+  }
+
+  if (Number(player1.hp || 0) <= 0) {
+    state.game_over = true;
+    state.turn_timer_active = false;
+    addBattleLog(state, "Player2 wins.");
+    return;
+  }
+
+  if (Number(player2.hp || 0) <= 0) {
+    state.game_over = true;
+    state.turn_timer_active = false;
+    addBattleLog(state, "Player1 wins.");
+  }
+}
+
+function applySummonState(card) {
+  if (!card) {
+    return;
+  }
+
+  card.summoned_this_turn = true;
+  card.has_attacked_this_turn = false;
+  card.attacks_this_turn = 0;
+
+  if (hasKeyword(card, "haste") || hasKeyword(card, "rush")) {
+    card.can_attack = true;
+    card.exhausted = false;
+    return;
+  }
+
+  card.can_attack = false;
+  card.exhausted = true;
+}
+
 function startServerTurn(state) {
   if (!state || state.game_over) {
     return;
@@ -1422,10 +1303,7 @@ function startServerTurn(state) {
     return;
   }
 
-  currentPlayer.max_mana = Math.min(
-    Number(currentPlayer.max_mana || 0) + MANA_GAIN_PER_TURN,
-    MAX_MANA
-  );
+  currentPlayer.max_mana = Math.min(Number(currentPlayer.max_mana || 0) + MANA_GAIN_PER_TURN, MAX_MANA);
   currentPlayer.mana = currentPlayer.max_mana;
 
   if (Array.isArray(currentPlayer.board)) {
@@ -1440,6 +1318,11 @@ function startServerTurn(state) {
       unit.has_attacked_this_turn = false;
       unit.attacks_this_turn = 0;
 
+      if (hasKeyword(unit, "immobile")) {
+        unit.can_attack = false;
+        unit.exhausted = true;
+      }
+
       if (!unit.once_per_turn_flags || typeof unit.once_per_turn_flags !== "object") {
         unit.once_per_turn_flags = {};
       }
@@ -1450,8 +1333,7 @@ function startServerTurn(state) {
   state.turn_timer_active = true;
   state.turn_timer_timeout_handled = false;
 
-  state.status_message = "Turn " + state.turn_number + ": " + currentPlayer.name + "'s turn started.";
-  state.battle_log_messages.push(state.status_message);
+  addBattleLog(state, "Turn " + state.turn_number + ": " + currentPlayer.name + "'s turn started.");
 }
 
 function makeInitialMatchState(match) {
@@ -1482,6 +1364,8 @@ function makeInitialMatchState(match) {
     selecting_hand_card: false,
     pending_action_type: "none",
     pending_card: null,
+    pending_hand_index: -1,
+    pending_card_owner: "",
     pending_attacker_index: -1,
     selected_attacker_owner: "",
     selected_attacker_index: -1,
@@ -1489,14 +1373,8 @@ function makeInitialMatchState(match) {
 
     battle_log_messages: [],
 
-    seat_to_owner_id: {
-      A: "player1",
-      B: "player2"
-    },
-    owner_to_seat_id: {
-      player1: "A",
-      player2: "B"
-    }
+    seat_to_owner_id: { A: "player1", B: "player2" },
+    owner_to_seat_id: { player1: "A", player2: "B" }
   };
 
   startServerTurn(state);
@@ -1504,173 +1382,356 @@ function makeInitialMatchState(match) {
   return state;
 }
 
-function getOwnerIdForSeat(seatId) {
-  if (seatId === "A") {
-    return "player1";
-  }
-
-  if (seatId === "B") {
-    return "player2";
-  }
-
-  return "";
-}
-
-function getEnemyOwnerId(ownerId) {
-  if (ownerId === "player1") {
-    return "player2";
-  }
-
-  if (ownerId === "player2") {
-    return "player1";
-  }
-
-  return "";
-}
-
-function finishMatchBySurrender(match, seatId) {
-  const state = match.state || {};
-  const loserOwnerId = getOwnerIdForSeat(seatId);
-  const winnerOwnerId = getEnemyOwnerId(loserOwnerId);
-
-  if (!loserOwnerId || !winnerOwnerId) {
-    return {
-      ok: false,
-      message: "Invalid surrender seat."
-    };
-  }
-
-  const loser = state[loserOwnerId];
-  const winner = state[winnerOwnerId];
-
-  if (!loser || !winner) {
-    return {
-      ok: false,
-      message: "Invalid surrender players."
-    };
-  }
-
-  loser.hp = 0;
-  state.game_over = true;
-  state.turn_timer_active = false;
-  state.turn_timer_timeout_handled = true;
+function clearPendingSelection(state) {
   state.selecting_target = false;
   state.selecting_hand_card = false;
   state.pending_action_type = "none";
   state.pending_card = null;
+  state.pending_hand_index = -1;
+  state.pending_card_owner = "";
   state.pending_attacker_index = -1;
   state.selected_attacker_owner = "";
   state.selected_attacker_index = -1;
   state.pending_ability = {};
-
-  state.status_message = loser.name + " surrendered. " + winner.name + " wins.";
-  state.battle_log_messages.push(state.status_message);
-
-  return {
-    ok: true,
-    state
-  };
 }
 
-function endServerTurn(match, seatId) {
-  const state = match.state || {};
-  const ownerId = getOwnerIdForSeat(seatId);
+function findRandomIndex(array, predicate) {
+  const candidates = [];
 
-  if (!ownerId) {
-    return {
-      ok: false,
-      message: "Invalid seat."
-    };
+  for (let i = 0; i < array.length; i++) {
+    if (predicate(array[i], i)) {
+      candidates.push(i);
+    }
   }
 
-  if (state.game_over) {
-    return {
-      ok: false,
-      message: "Game is already over."
-    };
+  if (candidates.length <= 0) {
+    return -1;
   }
 
-  if (state.current_player_id !== ownerId) {
-    return {
-      ok: false,
-      message: "Not your turn."
-    };
-  }
-
-  const current = state[state.current_player_id];
-
-  if (current) {
-    state.battle_log_messages.push(current.name + "'s turn ended.");
-  }
-
-  state.current_player_id = ownerId === "player1" ? "player2" : "player1";
-  state.turn_number = Number(state.turn_number || 1) + 1;
-  state.selecting_target = false;
-  state.selecting_hand_card = false;
-  state.pending_action_type = "none";
-  state.pending_card = null;
-  state.pending_attacker_index = -1;
-  state.selected_attacker_owner = "";
-  state.selected_attacker_index = -1;
-  state.pending_ability = {};
-
-  startServerTurn(state);
-
-  return {
-    ok: true,
-    state
-  };
+  return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
-function getPlayerForOwnerId(state, ownerId) {
-  if (!state) {
+function drawRandomCardFromDeck(player, predicate) {
+  if (!player || !Array.isArray(player.deck)) {
     return null;
   }
 
-  if (ownerId === "player1") {
-    return state.player1 || null;
+  const index = findRandomIndex(player.deck, predicate);
+
+  if (index < 0) {
+    return null;
   }
 
-  if (ownerId === "player2") {
-    return state.player2 || null;
+  const card = player.deck.splice(index, 1)[0];
+
+  if (!Array.isArray(player.hand)) {
+    player.hand = [];
   }
 
-  return null;
+  if (player.hand.length >= MAX_HAND_SIZE) {
+    player.graveyard.push(card);
+  } else {
+    player.hand.push(card);
+  }
+
+  return card;
 }
 
+function resolveSimpleSpellEffect(state, ownerId, card, payload) {
+  const player = getPlayerForOwnerId(state, ownerId);
+  const opponent = getOpponentForOwnerId(state, ownerId);
+  const effectId = String(card.effect_id || "none");
+  const power = Number(card.power || 0);
 
-function getOpponentOwnerId(ownerId) {
-  return ownerId === "player1" ? "player2" : "player1";
+  if (effectId === "draw") {
+    drawCards(player, power);
+    addBattleLog(state, player.name + " drew " + power + " card(s).");
+    return { ok: true, state };
+  }
+
+  if (effectId === "damage" && String(card.target_type || "none") === "enemy_player") {
+    damagePlayer(opponent, power);
+    addBattleLog(state, card.card_name + " dealt " + power + " damage to enemy leader.");
+    checkGameOver(state);
+    return { ok: true, state };
+  }
+
+  if (effectId === "heal" && String(card.target_type || "none") === "friendly_player") {
+    healPlayer(player, power);
+    addBattleLog(state, card.card_name + " healed allied leader for " + power + ".");
+    return { ok: true, state };
+  }
+
+  if (effectId === "buff_all_ally_units") {
+    for (const unit of player.board) {
+      changeStats(unit, 1, 1);
+    }
+    addBattleLog(state, card.card_name + " gave all allied units +1/+1.");
+    return { ok: true, state };
+  }
+
+  if (effectId === "economics_overflow") {
+    player.inflation_counters = Number(player.inflation_counters || 0) + 4;
+    addBattleLog(state, player.name + " gained 4 Inflation Counters.");
+    return { ok: true, state };
+  }
+
+  if (effectId === "book_of_rushwater") {
+    for (const unit of opponent.board) {
+      damageCard(unit, Number(card.power || 4));
+    }
+    removeDeadUnits(state);
+    checkGameOver(state);
+    addBattleLog(state, card.card_name + " dealt damage to all enemy units.");
+    return { ok: true, state };
+  }
+
+  if (effectId === "introduction_to_armory") {
+    for (const unit of player.board) {
+      unit.armor = Number(unit.armor || 0) + 1;
+    }
+    addBattleLog(state, card.card_name + " gave allied units Armor 1.");
+    return { ok: true, state };
+  }
+
+  if (effectId === "none") {
+    addBattleLog(state, player.name + " cast " + card.card_name + ".");
+    return { ok: true, state };
+  }
+
+  addBattleLog(state, player.name + " cast " + card.card_name + " but effect is not fully migrated yet: " + effectId);
+  return { ok: true, state };
 }
 
+function beginTargetSelection(state, ownerId, handIndex, card) {
+  state.selecting_target = true;
+  state.selecting_hand_card = false;
+  state.pending_action_type = "play_card_target";
+  state.pending_card = deepClone(card);
+  state.pending_hand_index = handIndex;
+  state.pending_card_owner = ownerId;
+  state.pending_ability = {};
 
-function applySummonState(card) {
-  if (!card) {
+  addBattleLog(state, "Choose a target for " + String(card.card_name || card.card_id) + ".");
+
+  return { ok: true, state };
+}
+
+function canTargetPlayer(card, ownerId, targetOwnerId) {
+  const targetType = String(card.target_type || "none");
+
+  if (targetType === "friendly_player") {
+    return ownerId === targetOwnerId;
+  }
+
+  if (targetType === "enemy_player") {
+    return ownerId !== targetOwnerId;
+  }
+
+  if (targetType === "any_enemy") {
+    return ownerId !== targetOwnerId;
+  }
+
+  if (targetType === "any_friendly") {
+    return ownerId === targetOwnerId;
+  }
+
+  if (targetType === "any") {
+    return true;
+  }
+
+  return false;
+}
+
+function canTargetUnit(card, ownerId, targetOwnerId, unit) {
+  if (!unit) {
+    return false;
+  }
+
+  const targetType = String(card.target_type || "none");
+
+  if (targetType === "enemy_unit") {
+    return ownerId !== targetOwnerId;
+  }
+
+  if (targetType === "any_unit") {
+    return true;
+  }
+
+  if (targetType === "any_enemy") {
+    return ownerId !== targetOwnerId;
+  }
+
+  if (targetType === "any_friendly") {
+    return ownerId === targetOwnerId;
+  }
+
+  if (targetType === "any") {
+    return true;
+  }
+
+  return false;
+}
+
+function resolveTargetedCardOnPlayer(state, targetOwnerId) {
+  const ownerId = String(state.pending_card_owner || "");
+  const player = getPlayerForOwnerId(state, ownerId);
+  const targetPlayer = getPlayerForOwnerId(state, targetOwnerId);
+  const card = state.pending_card;
+
+  if (!ownerId || !player || !targetPlayer || !card) {
+    return { ok: false, message: "No pending targeted card." };
+  }
+
+  if (!canTargetPlayer(card, ownerId, targetOwnerId)) {
+    return { ok: false, message: "Invalid player target." };
+  }
+
+  if (card.effect_id === "damage") {
+    damagePlayer(targetPlayer, Number(card.power || 0));
+    addBattleLog(state, card.card_name + " dealt " + Number(card.power || 0) + " damage.");
+  } else if (card.effect_id === "heal") {
+    healPlayer(targetPlayer, Number(card.power || 0));
+    addBattleLog(state, card.card_name + " healed " + Number(card.power || 0) + ".");
+  } else {
+    addBattleLog(state, card.card_name + " resolved on leader. effect not fully migrated: " + card.effect_id);
+  }
+
+  player.graveyard.push(card);
+  clearPendingSelection(state);
+  checkGameOver(state);
+
+  return { ok: true, state };
+}
+
+function resolveTargetedCardOnUnit(state, targetOwnerId, unitIndex) {
+  const ownerId = String(state.pending_card_owner || "");
+  const player = getPlayerForOwnerId(state, ownerId);
+  const targetPlayer = getPlayerForOwnerId(state, targetOwnerId);
+  const card = state.pending_card;
+
+  if (!ownerId || !player || !targetPlayer || !card) {
+    return { ok: false, message: "No pending targeted card." };
+  }
+
+  if (!Array.isArray(targetPlayer.board) || unitIndex < 0 || unitIndex >= targetPlayer.board.length) {
+    return { ok: false, message: "Invalid unit target." };
+  }
+
+  const targetUnit = targetPlayer.board[unitIndex];
+
+  if (!canTargetUnit(card, ownerId, targetOwnerId, targetUnit)) {
+    return { ok: false, message: "Invalid unit target." };
+  }
+
+  if (hasKeyword(targetUnit, "untrickable") && ownerId !== targetOwnerId) {
+    return { ok: false, message: "Target is untrickable." };
+  }
+
+  if (card.effect_id === "damage") {
+    damageCard(targetUnit, Number(card.power || 0));
+    addBattleLog(state, card.card_name + " dealt " + Number(card.power || 0) + " damage to " + targetUnit.card_name + ".");
+  } else if (card.effect_id === "heal") {
+    healCard(targetUnit, Number(card.power || 0));
+    addBattleLog(state, card.card_name + " healed " + targetUnit.card_name + ".");
+  } else if (card.effect_id === "destroy_unit") {
+    targetUnit.hp = 0;
+    addBattleLog(state, card.card_name + " destroyed " + targetUnit.card_name + ".");
+  } else if (card.effect_id === "add_keyword") {
+    const ability = Array.isArray(card.abilities) && card.abilities.length > 0 ? card.abilities[0] : {};
+    const keyword = String(ability.keyword || "");
+
+    if (keyword) {
+      addKeyword(targetUnit, keyword);
+      addBattleLog(state, targetUnit.card_name + " gained " + keyword + ".");
+    }
+  } else if (card.effect_id === "add_keywords_to_unit") {
+    const ability = Array.isArray(card.abilities) && card.abilities.length > 0 ? card.abilities[0] : {};
+    const keywords = Array.isArray(ability.keywords) ? ability.keywords : [];
+
+    for (const keyword of keywords) {
+      addKeyword(targetUnit, String(keyword));
+    }
+
+    addBattleLog(state, targetUnit.card_name + " gained keywords from " + card.card_name + ".");
+  } else {
+    addBattleLog(state, card.card_name + " resolved on unit. effect not fully migrated: " + card.effect_id);
+  }
+
+  player.graveyard.push(card);
+  removeDeadUnits(state);
+  clearPendingSelection(state);
+  checkGameOver(state);
+
+  return { ok: true, state };
+}
+
+function resolveBattlecry(state, ownerId, card) {
+  const player = getPlayerForOwnerId(state, ownerId);
+  const opponent = getOpponentForOwnerId(state, ownerId);
+
+  if (!player || !card || !Array.isArray(card.abilities)) {
     return;
   }
 
-  card.summoned_this_turn = true;
-  card.has_attacked_this_turn = false;
-  card.attacks_this_turn = 0;
+  for (const ability of card.abilities) {
+    if (!ability || String(ability.trigger || "") !== "battlecry") {
+      continue;
+    }
 
-  const keywords = Array.isArray(card.keywords) ? card.keywords : [];
+    const effect = String(ability.effect || "");
 
-  if (keywords.includes("haste")) {
-    card.can_attack = true;
-    card.exhausted = false;
-    return;
+    if (effect === "draw") {
+      drawCards(player, Number(ability.amount || 1));
+      addBattleLog(state, card.card_name + " drew cards.");
+    } else if (effect === "summon_cards") {
+      const amount = Number(ability.amount || 1);
+      const cardId = String(ability.card_id || "");
+
+      for (let i = 0; i < amount; i++) {
+        if (player.board.length >= MAX_BOARD_SIZE) {
+          break;
+        }
+
+        const summoned = makeCardFromId(cardId);
+        applySummonState(summoned);
+        player.board.push(summoned);
+      }
+
+      addBattleLog(state, card.card_name + " summoned " + amount + " card(s).");
+    } else if (effect === "buff_trait") {
+      const trait = String(ability.trait || "");
+
+      for (const unit of player.board) {
+        if (hasTrait(unit, trait)) {
+          changeStats(unit, Number(ability.attack || 0), Number(ability.hp || 0));
+          const keywords = Array.isArray(ability.keywords) ? ability.keywords : [];
+          for (const keyword of keywords) {
+            addKeyword(unit, String(keyword));
+          }
+        }
+      }
+    } else if (effect === "scribe_of_history") {
+      const count = Array.isArray(opponent.board) ? opponent.board.length : 0;
+      changeStats(card, count, count);
+    } else if (effect === "blind_researcher") {
+      drawRandomCardFromDeck(player, (deckCard) => hasTrait(deckCard, "scholar"));
+    } else if (effect === "humble_librarian") {
+      const burnCount = player.hand.length;
+      while (player.hand.length > 0) {
+        player.graveyard.push(player.hand.shift());
+      }
+      drawCards(player, burnCount);
+    } else if (effect === "all_knowing_archivist") {
+      damagePlayer(opponent, Number(card.cost || 0));
+    } else {
+      addBattleLog(state, card.card_name + " battlecry not fully migrated: " + effect);
+    }
   }
 
-  if (keywords.includes("rush")) {
-    card.can_attack = true;
-    card.exhausted = false;
-    return;
-  }
-
-  card.can_attack = false;
-  card.exhausted = true;
+  removeDeadUnits(state);
+  checkGameOver(state);
 }
-
 
 function playCardFromHand(match, seatId, handIndex) {
   const state = match.state || {};
@@ -1678,24 +1739,15 @@ function playCardFromHand(match, seatId, handIndex) {
   const player = getPlayerForOwnerId(state, ownerId);
 
   if (!ownerId || !player) {
-    return {
-      ok: false,
-      message: "Invalid player."
-    };
+    return { ok: false, message: "Invalid player." };
   }
 
   if (state.game_over) {
-    return {
-      ok: false,
-      message: "Game is already over."
-    };
+    return { ok: false, message: "Game is already over." };
   }
 
   if (state.current_player_id !== ownerId) {
-    return {
-      ok: false,
-      message: "Not your turn."
-    };
+    return { ok: false, message: "Not your turn." };
   }
 
   if (!Array.isArray(player.hand)) {
@@ -1711,22 +1763,20 @@ function playCardFromHand(match, seatId, handIndex) {
   }
 
   if (handIndex < 0 || handIndex >= player.hand.length) {
-    return {
-      ok: false,
-      message: "Invalid hand index."
-    };
+    return { ok: false, message: "Invalid hand index." };
   }
 
   const card = player.hand[handIndex];
 
   if (!card) {
-    return {
-      ok: false,
-      message: "Selected card is missing."
-    };
+    return { ok: false, message: "Selected card is missing." };
   }
 
-  const cost = Number(card.cost || 0);
+  let cost = Number(card.cost || 0);
+
+  if (card.card_type === "unit" && Number(player.inflation_counters || 0) > 0) {
+    cost += 1;
+  }
 
   if (Number(player.mana || 0) < cost) {
     return {
@@ -1735,75 +1785,290 @@ function playCardFromHand(match, seatId, handIndex) {
     };
   }
 
-  if (card.card_type === "unit" && player.board.length >= 5) {
-    return {
-      ok: false,
-      message: "Board is full."
-    };
+  if (card.card_type === "unit" && player.board.length >= MAX_BOARD_SIZE) {
+    return { ok: false, message: "Board is full." };
   }
 
   const targetType = String(card.target_type || "none");
 
   if (targetType !== "none") {
-    return {
-      ok: false,
-      message: "Targeted cards are not implemented on Node yet: " + String(card.card_name || card.card_id)
-    };
+    player.mana = Number(player.mana || 0) - cost;
+    player.hand.splice(handIndex, 1);
+    return beginTargetSelection(state, ownerId, handIndex, card);
   }
 
   player.mana = Number(player.mana || 0) - cost;
   player.hand.splice(handIndex, 1);
 
   if (card.card_type === "unit") {
+    if (Number(player.inflation_counters || 0) > 0) {
+      player.inflation_counters = Number(player.inflation_counters || 0) - 1;
+      changeStats(card, 2, 1);
+    }
+
     applySummonState(card);
     player.board.push(card);
 
-    state.status_message = player.name + " summoned " + String(card.card_name || card.card_id) + ".";
-    state.battle_log_messages.push(state.status_message);
+    if (hasTrait(card, "scholar")) {
+      player.scholar_cards_played_this_game = Number(player.scholar_cards_played_this_game || 0) + 1;
+    }
 
-    return {
-      ok: true,
-      state
-    };
+    addBattleLog(state, player.name + " summoned " + String(card.card_name || card.card_id) + ".");
+    resolveBattlecry(state, ownerId, card);
+
+    return { ok: true, state };
   }
 
   if (card.card_type === "spell") {
+    player.last_spell_cast = deepClone(card);
     player.graveyard.push(card);
 
-    state.status_message = player.name + " cast " + String(card.card_name || card.card_id) + ".";
-    state.battle_log_messages.push(state.status_message);
+    if (hasTrait(card, "scholar")) {
+      player.scholar_cards_played_this_game = Number(player.scholar_cards_played_this_game || 0) + 1;
+    }
 
-    return {
-      ok: true,
-      state
-    };
+    const result = resolveSimpleSpellEffect(state, ownerId, card, {});
+    checkGameOver(state);
+    return result;
   }
 
-  return {
-    ok: false,
-    message: "Unknown card type: " + String(card.card_type || "")
-  };
+  return { ok: false, message: "Unknown card type: " + String(card.card_type || "") };
+}
+
+function resolveAttack(match, seatId, attackerIndex, targetOwnerId, targetIndex, targetIsLeader) {
+  const state = match.state || {};
+  const ownerId = getOwnerIdForSeat(seatId);
+  const attackerPlayer = getPlayerForOwnerId(state, ownerId);
+  const defenderPlayer = getPlayerForOwnerId(state, targetOwnerId);
+
+  if (!ownerId || !attackerPlayer || !defenderPlayer) {
+    return { ok: false, message: "Invalid attacker or target." };
+  }
+
+  if (state.game_over) {
+    return { ok: false, message: "Game is already over." };
+  }
+
+  if (state.current_player_id !== ownerId) {
+    return { ok: false, message: "Not your turn." };
+  }
+
+  if (!Array.isArray(attackerPlayer.board) || attackerIndex < 0 || attackerIndex >= attackerPlayer.board.length) {
+    return { ok: false, message: "Invalid attacker index." };
+  }
+
+  const attacker = attackerPlayer.board[attackerIndex];
+
+  if (!attacker) {
+    return { ok: false, message: "Attacker is missing." };
+  }
+
+  if (!attacker.can_attack || attacker.exhausted || hasKeyword(attacker, "immobile")) {
+    return { ok: false, message: "This unit cannot attack." };
+  }
+
+  if (Number(attacker.attacks_this_turn || 0) >= Number(attacker.max_attacks_per_turn || 1)) {
+    return { ok: false, message: "This unit has already attacked enough times." };
+  }
+
+  if (targetIsLeader) {
+    if (ownerId === targetOwnerId) {
+      return { ok: false, message: "Cannot attack your own leader." };
+    }
+
+    if (hasKeyword(attacker, "rush") && attacker.summoned_this_turn && !hasKeyword(attacker, "haste")) {
+      return { ok: false, message: "Rush units cannot attack leader on the turn they are summoned." };
+    }
+
+    const taunts = defenderPlayer.board.filter((unit) => hasKeyword(unit, "taunt"));
+
+    if (taunts.length > 0) {
+      return { ok: false, message: "Enemy taunt unit must be attacked first." };
+    }
+
+    damagePlayer(defenderPlayer, Number(attacker.attack || 0));
+    attacker.attacks_this_turn = Number(attacker.attacks_this_turn || 0) + 1;
+
+    if (Number(attacker.attacks_this_turn || 0) >= Number(attacker.max_attacks_per_turn || 1)) {
+      attacker.can_attack = false;
+      attacker.exhausted = true;
+    }
+
+    addBattleLog(state, attacker.card_name + " attacked enemy leader for " + Number(attacker.attack || 0) + ".");
+    checkGameOver(state);
+    return { ok: true, state };
+  }
+
+  if (!Array.isArray(defenderPlayer.board) || targetIndex < 0 || targetIndex >= defenderPlayer.board.length) {
+    return { ok: false, message: "Invalid target unit index." };
+  }
+
+  const defender = defenderPlayer.board[targetIndex];
+
+  if (!defender) {
+    return { ok: false, message: "Target unit is missing." };
+  }
+
+  if (ownerId === targetOwnerId) {
+    return { ok: false, message: "Cannot attack your own unit." };
+  }
+
+  const taunts = defenderPlayer.board.filter((unit) => hasKeyword(unit, "taunt"));
+
+  if (taunts.length > 0 && !hasKeyword(defender, "taunt")) {
+    return { ok: false, message: "Enemy taunt unit must be attacked first." };
+  }
+
+  const attackerDamage = Number(attacker.attack || 0);
+  const defenderDamage = Number(defender.attack || 0);
+
+  if (hasKeyword(attacker, "deadly") && attackerDamage > 0) {
+    defender.hp = 0;
+  } else {
+    damageCard(defender, attackerDamage);
+  }
+
+  if (hasKeyword(defender, "deadly") && defenderDamage > 0) {
+    attacker.hp = 0;
+  } else {
+    damageCard(attacker, defenderDamage);
+  }
+
+  if (hasKeyword(attacker, "ricochet") && attackerDamage > 0) {
+    damagePlayer(defenderPlayer, attackerDamage);
+  }
+
+  attacker.attacks_this_turn = Number(attacker.attacks_this_turn || 0) + 1;
+
+  if (Number(attacker.attacks_this_turn || 0) >= Number(attacker.max_attacks_per_turn || 1)) {
+    attacker.can_attack = false;
+    attacker.exhausted = true;
+  }
+
+  removeDeadUnits(state);
+  addBattleLog(state, attacker.card_name + " attacked " + defender.card_name + ".");
+  checkGameOver(state);
+
+  return { ok: true, state };
+}
+
+function finishMatchBySurrender(match, seatId) {
+  const state = match.state || {};
+  const loserOwnerId = getOwnerIdForSeat(seatId);
+  const winnerOwnerId = getEnemyOwnerId(loserOwnerId);
+
+  if (!loserOwnerId || !winnerOwnerId) {
+    return { ok: false, message: "Invalid surrender seat." };
+  }
+
+  const loser = state[loserOwnerId];
+  const winner = state[winnerOwnerId];
+
+  if (!loser || !winner) {
+    return { ok: false, message: "Invalid surrender players." };
+  }
+
+  loser.hp = 0;
+  state.game_over = true;
+  state.turn_timer_active = false;
+  state.turn_timer_timeout_handled = true;
+  clearPendingSelection(state);
+
+  addBattleLog(state, loser.name + " surrendered. " + winner.name + " wins.");
+
+  return { ok: true, state };
+}
+
+function endServerTurn(match, seatId) {
+  const state = match.state || {};
+  const ownerId = getOwnerIdForSeat(seatId);
+
+  if (!ownerId) {
+    return { ok: false, message: "Invalid seat." };
+  }
+
+  if (state.game_over) {
+    return { ok: false, message: "Game is already over." };
+  }
+
+  if (state.current_player_id !== ownerId) {
+    return { ok: false, message: "Not your turn." };
+  }
+
+  const current = state[state.current_player_id];
+
+  if (current) {
+    state.battle_log_messages.push(current.name + "'s turn ended.");
+  }
+
+  state.current_player_id = ownerId === "player1" ? "player2" : "player1";
+  state.turn_number = Number(state.turn_number || 1) + 1;
+  clearPendingSelection(state);
+
+  startServerTurn(state);
+
+  return { ok: true, state };
 }
 
 function handleServerBattleAction(match, seatId, action, payload) {
   if (!match) {
-    return {
-      ok: false,
-      message: "Match not found."
-    };
+    return { ok: false, message: "Match not found." };
   }
 
   if (!match.state) {
-    return {
-      ok: false,
-      message: "Match state is missing."
-    };
+    return { ok: false, message: "Match state is missing." };
   }
+
+  const state = match.state;
 
   switch (action) {
     case "hand_card_clicked": {
-      const handIndex = Number(payload.hand_index ?? -1);
+      const handIndex = Number(payload.hand_index ?? payload.index ?? -1);
       return playCardFromHand(match, seatId, handIndex);
+    }
+
+    case "board_slot_clicked": {
+      const ownerId = getOwnerIdForSeat(seatId);
+      const clickedOwnerId = String(payload.owner_id || payload.owner || "");
+      const index = Number(payload.index ?? payload.board_index ?? -1);
+
+      if (state.selecting_target && state.pending_action_type === "play_card_target") {
+        return resolveTargetedCardOnUnit(state, clickedOwnerId, index);
+      }
+
+      if (state.selected_attacker_owner && Number(state.selected_attacker_index || -1) >= 0) {
+        return resolveAttack(match, seatId, Number(state.selected_attacker_index), clickedOwnerId, index, false);
+      }
+
+      if (clickedOwnerId !== ownerId) {
+        return { ok: false, message: "Select your own unit to attack first." };
+      }
+
+      state.selected_attacker_owner = ownerId;
+      state.selected_attacker_index = index;
+      state.pending_action_type = "attack_target";
+      addBattleLog(state, "Choose an attack target.");
+      return { ok: true, state };
+    }
+
+    case "player_face_clicked": {
+      const clickedOwnerId = String(payload.owner_id || payload.owner || "");
+
+      if (state.selecting_target && state.pending_action_type === "play_card_target") {
+        return resolveTargetedCardOnPlayer(state, clickedOwnerId);
+      }
+
+      if (state.selected_attacker_owner && Number(state.selected_attacker_index || -1) >= 0) {
+        return resolveAttack(match, seatId, Number(state.selected_attacker_index), clickedOwnerId, -1, true);
+      }
+
+      return { ok: false, message: "No pending target selection." };
+    }
+
+    case "cancel_selection": {
+      clearPendingSelection(state);
+      addBattleLog(state, "Selection canceled.");
+      return { ok: true, state };
     }
 
     case "end_turn":
@@ -1813,10 +2078,7 @@ function handleServerBattleAction(match, seatId, action, payload) {
       return finishMatchBySurrender(match, seatId);
 
     default:
-      return {
-        ok: false,
-        message: "Node battle action not implemented yet: " + action
-      };
+      return { ok: false, message: "Node battle action not implemented yet: " + action };
   }
 }
 
@@ -1833,21 +2095,11 @@ function broadcastMatchState(matchId, state) {
   const clientB = clients.get(match.seats.B.client_id);
 
   if (clientA) {
-    safeSend(clientA.ws, {
-      type: "match_state",
-      match_id: matchId,
-      seat_id: "A",
-      state: match.state
-    });
+    safeSend(clientA.ws, { type: "match_state", match_id: matchId, seat_id: "A", state: match.state });
   }
 
   if (clientB) {
-    safeSend(clientB.ws, {
-      type: "match_state",
-      match_id: matchId,
-      seat_id: "B",
-      state: match.state
-    });
+    safeSend(clientB.ws, { type: "match_state", match_id: matchId, seat_id: "B", state: match.state });
   }
 }
 
@@ -1894,13 +2146,8 @@ function destroyMatch(matchId, reason = "Match destroyed.") {
     return;
   }
 
-  const clientA = match.seats && match.seats.A
-    ? clients.get(match.seats.A.client_id)
-    : null;
-
-  const clientB = match.seats && match.seats.B
-    ? clients.get(match.seats.B.client_id)
-    : null;
+  const clientA = match.seats && match.seats.A ? clients.get(match.seats.A.client_id) : null;
+  const clientB = match.seats && match.seats.B ? clients.get(match.seats.B.client_id) : null;
 
   if (clientA) {
     clientA.match_id = "";
@@ -1921,38 +2168,6 @@ function destroyMatch(matchId, reason = "Match destroyed.") {
   tryMakeMatch();
 }
 
-function getSideFromDeckData(deckData) {
-  if (!deckData || typeof deckData !== "object") {
-    return "";
-  }
-
-  return String(deckData.side || "").toLowerCase();
-}
-
-function validateDeckData(deckData) {
-  if (!deckData || typeof deckData !== "object") {
-    return "deck_data is missing.";
-  }
-
-  const side = getSideFromDeckData(deckData);
-
-  if (side !== "human" && side !== "god") {
-    return "deck_data.side must be human or god.";
-  }
-
-  const cards = Array.isArray(deckData.card_ids)
-    ? deckData.card_ids
-    : Array.isArray(deckData.cards)
-      ? deckData.cards
-      : [];
-
-  if (cards.length <= 0) {
-    return "deck_data has no cards.";
-  }
-
-  return "";
-}
-
 // ============================================================================
 // WebSocket message handling
 // ============================================================================
@@ -1962,12 +2177,7 @@ function handleClientMessage(client, message) {
   switch (type) {
     case "auth": {
       client.user_id = String(message.user_id || "");
-
-      safeSend(client.ws, {
-        type: "auth_ok",
-        user_id: client.user_id
-      });
-
+      safeSend(client.ws, { type: "auth_ok", user_id: client.user_id });
       return;
     }
 
@@ -1997,11 +2207,7 @@ function handleClientMessage(client, message) {
 
       console.log("[QUEUE] joined", client.client_id, "side=", side, "queue=", queue.length);
 
-      safeSend(client.ws, {
-        type: "queue_joined",
-        side,
-        queue_size: queue.length
-      });
+      safeSend(client.ws, { type: "queue_joined", side, queue_size: queue.length });
 
       tryMakeMatch();
       return;
@@ -2009,13 +2215,8 @@ function handleClientMessage(client, message) {
 
     case "queue_leave": {
       removeClientFromQueue(client.client_id);
-
       client.queued = false;
-
-      safeSend(client.ws, {
-        type: "queue_left"
-      });
-
+      safeSend(client.ws, { type: "queue_left" });
       console.log("[QUEUE] left", client.client_id, "queue=", queue.length);
       return;
     }
@@ -2024,9 +2225,7 @@ function handleClientMessage(client, message) {
       const matchId = String(message.match_id || "");
       const seatId = String(message.seat_id || "");
       const action = String(message.action || "");
-      const payload = message.payload && typeof message.payload === "object"
-        ? message.payload
-        : {};
+      const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
 
       if (!matchId || !seatId || !action) {
         sendActionRejected(client.client_id, "Invalid battle_action message.");
@@ -2068,9 +2267,7 @@ function handleClientMessage(client, message) {
     }
 
     case "ping": {
-      safeSend(client.ws, {
-        type: "pong"
-      });
+      safeSend(client.ws, { type: "pong" });
       return;
     }
 
@@ -2081,7 +2278,6 @@ function handleClientMessage(client, message) {
   }
 }
 
-// 互換用。Aルートではhost接続は戦闘に使わない。
 function handleHostMessage(host, message) {
   const type = String(message.type || "");
 
@@ -2095,18 +2291,15 @@ function handleHostMessage(host, message) {
       }
 
       host.capacity = Number(message.capacity || 1);
-
       console.log("[HOST] ready ignored in Node authoritative mode", host.host_id);
       return;
     }
 
-    case "pong": {
+    case "pong":
       return;
-    }
 
-    default: {
+    default:
       console.log("[HOST] Ignored message in Node authoritative mode", host.host_id, message);
-    }
   }
 }
 
@@ -2191,13 +2384,8 @@ wss.on("connection", (ws, req) => {
       handleHostMessage(host, message);
     });
 
-    ws.on("close", () => {
-      handleDisconnect(host);
-    });
-
-    ws.on("error", (error) => {
-      console.log("[HOST] socket error", hostId, error.message);
-    });
+    ws.on("close", () => handleDisconnect(host));
+    ws.on("error", (error) => console.log("[HOST] socket error", hostId, error.message));
 
     return;
   }
@@ -2218,10 +2406,7 @@ wss.on("connection", (ws, req) => {
 
   console.log("[CLIENT] connected", clientId);
 
-  safeSend(ws, {
-    type: "welcome",
-    client_id: clientId
-  });
+  safeSend(ws, { type: "welcome", client_id: clientId });
 
   ws.on("message", (data) => {
     const message = safeParse(data.toString());
@@ -2235,13 +2420,8 @@ wss.on("connection", (ws, req) => {
     handleClientMessage(client, message);
   });
 
-  ws.on("close", () => {
-    handleDisconnect(client);
-  });
-
-  ws.on("error", (error) => {
-    console.log("[CLIENT] socket error", clientId, error.message);
-  });
+  ws.on("close", () => handleDisconnect(client));
+  ws.on("error", (error) => console.log("[CLIENT] socket error", clientId, error.message));
 });
 
 server.listen(PORT, () => {
