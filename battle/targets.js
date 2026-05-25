@@ -337,10 +337,10 @@ function isValidTargetForPendingSpell(state, sourceSeat, targetOwnerSeat, target
 
   switch (targetType) {
     case C.TARGET_ANY_ENEMY:
-      return isEnemy;
+      return isEnemy && (targetKind === "unit" || targetKind === "player");
 
     case C.TARGET_ANY_FRIENDLY:
-      return isFriendly;
+      return isFriendly && (targetKind === "unit" || targetKind === "player");
 
     case C.TARGET_ENEMY_UNIT:
       return isEnemy && targetKind === "unit";
