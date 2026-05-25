@@ -19,6 +19,7 @@ const STARTING_MANA = 0;
 const TURN_TIME_LIMIT_SECONDS = 45.0;
 const MAX_HAND_SIZE = 7;
 const MATCH_TIMER_TICK_MS = 250;
+const MATCH_RECONNECT_GRACE_MS = Number(process.env.MATCH_RECONNECT_GRACE_MS || 120000);
 
 const pool = DATABASE_URL
   ? new Pool({
@@ -1121,6 +1122,34 @@ function broadcastMatchState(matchId) {
   }
 }
 
+function isSeatConnected(match, seatId) {
+  const seat = match && match.seats ? match.seats[seatId] : null;
+
+  if (!seat || seat.disconnected) {
+    return false;
+  }
+
+  const client = clients.get(seat.client_id);
+  return Boolean(client && client.ws && client.ws.readyState === WebSocket.OPEN);
+}
+
+function hasExpiredDisconnectedSeat(match, now) {
+  if (!match || !match.seats) {
+    return false;
+  }
+
+  for (const seatId of ["A", "B"]) {
+    const seat = match.seats[seatId];
+    if (seat && seat.disconnected && Number(seat.disconnected_at || 0) > 0) {
+      if (now - Number(seat.disconnected_at) >= MATCH_RECONNECT_GRACE_MS) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 function sendMatchFound(matchId) {
   const match = matches.get(matchId);
 
@@ -1265,7 +1294,9 @@ function tryMakeMatch() {
           username: clientA.username,
           display_name: clientA.display_name,
           deck_data: entryA.deck_data,
-          side: entryA.side
+          side: entryA.side,
+          disconnected: false,
+          disconnected_at: null
         },
         B: {
           client_id: entryB.client_id,
@@ -1273,7 +1304,9 @@ function tryMakeMatch() {
           username: clientB.username,
           display_name: clientB.display_name,
           deck_data: entryB.deck_data,
-          side: entryB.side
+          side: entryB.side,
+          disconnected: false,
+          disconnected_at: null
         }
       },
       created_at: Date.now(),
@@ -1350,6 +1383,26 @@ function tickMatchTimers() {
       const state = match.state;
 
       if (state.game_over) {
+        continue;
+      }
+
+      if (hasExpiredDisconnectedSeat(match, now)) {
+        for (const seatId of ["A", "B"]) {
+          if (isSeatConnected(match, seatId)) {
+            const client = clients.get(match.seats[seatId].client_id);
+            safeSend(client.ws, {
+              type: "opponent_left",
+              match_id: matchId,
+              message: "Opponent did not reconnect in time."
+            });
+          }
+        }
+        destroyMatch(matchId, "Reconnection grace period expired.");
+        continue;
+      }
+
+      if (!isSeatConnected(match, "A") && !isSeatConnected(match, "B")) {
+        match.last_timer_update_at = now;
         continue;
       }
 
@@ -1542,6 +1595,96 @@ async function handleClientMessage(client, message) {
       });
 
       tryMakeMatch();
+      return;
+    }
+
+    case "rejoin_match": {
+      if (!client.is_authenticated) {
+        safeSend(client.ws, { type: "auth_error", message: "Authentication required." });
+        return;
+      }
+
+      const matchId = String(message.match_id || "");
+      const seatId = String(message.seat_id || "");
+      const match = matches.get(matchId);
+
+      if (!match || (seatId !== "A" && seatId !== "B") || !match.seats[seatId]) {
+        safeSend(client.ws, {
+          type: "rejoin_failed",
+          match_id: matchId,
+          message: "Battle could not be restored after the server restarted."
+        });
+        return;
+      }
+
+      const seat = match.seats[seatId];
+      if (Number(seat.user_id || 0) !== Number(client.user_id || 0)) {
+        safeSend(client.ws, {
+          type: "rejoin_failed",
+          match_id: matchId,
+          message: "This account cannot rejoin that seat."
+        });
+        return;
+      }
+
+      const previousClient = clients.get(seat.client_id);
+      if (!seat.disconnected && previousClient && previousClient.ws && previousClient.ws.readyState === WebSocket.OPEN) {
+        safeSend(client.ws, {
+          type: "rejoin_failed",
+          match_id: matchId,
+          message: "That battle seat is already connected."
+        });
+        return;
+      }
+
+      removeClientFromQueue(client.client_id);
+      client.queued = false;
+      client.match_id = matchId;
+      client.seat_id = seatId;
+
+      seat.client_id = client.client_id;
+      seat.disconnected = false;
+      seat.disconnected_at = null;
+      match.last_timer_update_at = Date.now();
+
+      const otherSeatId = seatId === "A" ? "B" : "A";
+      const otherSeat = match.seats[otherSeatId];
+      const publicState = getPublicBattleState(match);
+
+      safeSend(client.ws, {
+        type: "match_rejoined",
+        match_id: matchId,
+        seat_id: seatId,
+        side: seat.side,
+        opponent_side: otherSeat.side,
+        display_name: seat.display_name,
+        opponent_display_name: otherSeat.display_name,
+        first_player_id: publicState.first_player_id,
+        first_player_seat: publicState.first_player_seat,
+        first_player_side: publicState.first_player_side,
+        state: publicState
+      });
+
+      if (isSeatConnected(match, otherSeatId)) {
+        const otherClient = clients.get(otherSeat.client_id);
+        safeSend(otherClient.ws, {
+          type: "opponent_rejoined",
+          match_id: matchId,
+          message: "Opponent rejoined the battle."
+        });
+      }
+
+      broadcastMatchState(matchId);
+      console.log(
+        "[MATCH] client rejoined",
+        matchId,
+        "seat=",
+        seatId,
+        "client_id=",
+        client.client_id,
+        "user_id=",
+        client.user_id
+      );
       return;
     }
 
