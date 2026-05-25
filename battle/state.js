@@ -208,6 +208,9 @@ function normalizeState(state) {
 
   state.turn_seat = String(state.turn_seat || "");
   state.current_player_id = String(state.current_player_id || "");
+  state.first_player_seat = String(state.first_player_seat || "");
+  state.first_player_id = String(state.first_player_id || "");
+  state.first_player_side = String(state.first_player_side || "").toLowerCase();
 
   if (!state.turn_seat && state.current_player_id) {
     state.turn_seat = U.ownerIdToSeat(state.current_player_id);
@@ -525,6 +528,9 @@ function makePublicState(state) {
     turn_number: state.turn_number,
     current_player_id: state.current_player_id,
     turn_seat: state.turn_seat,
+    first_player_id: state.first_player_id,
+    first_player_seat: state.first_player_seat,
+    first_player_side: state.first_player_side,
 
     status_message: state.status_message,
     game_over: state.game_over,

@@ -8,6 +8,7 @@ const BattleEngine = require("./battle_engine");
 const { createAuthService } = require("./auth_service");
 const { createAuthRoutes } = require("./auth_routes");
 const { createAuthMiddleware } = require("./auth_middleware");
+const { chooseFirstPlayer } = require("./battle/coin_flip");
 
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || "";
@@ -908,6 +909,7 @@ function makeInitialPlayerState(ownerId, deckData) {
 function makeInitialMatchState(match) {
   const player1 = makeInitialPlayerState("player1", match.seats.A.deck_data);
   const player2 = makeInitialPlayerState("player2", match.seats.B.deck_data);
+  const coinFlip = chooseFirstPlayer(match.seats);
 
   for (let i = 0; i < STARTING_HAND_SIZE; i++) {
     drawOneCard(player1);
@@ -919,8 +921,11 @@ function makeInitialMatchState(match) {
     authority_mode: "server",
 
     turn_number: 1,
-    current_player_id: "player1",
-    turn_seat: "A",
+    current_player_id: coinFlip.first_player_id,
+    turn_seat: coinFlip.first_player_seat,
+    first_player_id: coinFlip.first_player_id,
+    first_player_seat: coinFlip.first_player_seat,
+    first_player_side: coinFlip.first_player_side,
 
     status_message: "",
     game_over: false,
@@ -969,7 +974,7 @@ function makeInitialMatchState(match) {
     pending_hand_candidate_indexes: []
   };
 
-  const result = BattleEngine.startTurn(state, "A", { makeCardFromId });
+  const result = BattleEngine.startTurn(state, coinFlip.first_player_seat, { makeCardFromId });
 
   if (result && result.ok === false) {
     throw new Error(result.message || "Failed to start first turn.");
@@ -1151,6 +1156,9 @@ function sendMatchFound(matchId) {
     opponent_side: sideB,
     display_name: match.seats.A.display_name,
     opponent_display_name: match.seats.B.display_name,
+    first_player_id: publicState.first_player_id,
+    first_player_seat: publicState.first_player_seat,
+    first_player_side: publicState.first_player_side,
     state: publicState
   };
 
@@ -1162,6 +1170,9 @@ function sendMatchFound(matchId) {
     opponent_side: sideA,
     display_name: match.seats.B.display_name,
     opponent_display_name: match.seats.A.display_name,
+    first_player_id: publicState.first_player_id,
+    first_player_seat: publicState.first_player_seat,
+    first_player_side: publicState.first_player_side,
     state: publicState
   };
 
@@ -1312,7 +1323,11 @@ function tryMakeMatch() {
       clientB.user_id,
       "display_name=",
       clientB.display_name,
-      entryB.side
+      entryB.side,
+      "first_side=",
+      match.state.first_player_side,
+      "first_seat=",
+      match.state.first_player_seat
     );
 
     if (clientA.user_id === clientB.user_id) {
