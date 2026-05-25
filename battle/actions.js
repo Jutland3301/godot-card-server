@@ -205,7 +205,9 @@ function cancelTargetSelection(state, seatId) {
   return { ok: true, state };
 }
 
-function validateCanPlayCard(state, seatId, player, card) {
+function validateCanPlayCard(state, seatId, player, card, options = {}) {
+  const allowDuringSelection = Boolean(options.allowDuringSelection || false);
+
   const turn = validateTurnAction(state, seatId);
   if (!turn.ok) {
     return { ok: false, message: turn.message };
@@ -219,7 +221,7 @@ function validateCanPlayCard(state, seatId, player, card) {
     return { ok: false, message: "Card is missing." };
   }
 
-  if (state.selecting_target || state.selecting_hand_card) {
+  if (!allowDuringSelection && (state.selecting_target || state.selecting_hand_card)) {
     return { ok: false, message: "Already selecting a target." };
   }
 
@@ -268,14 +270,19 @@ function consumeCardFromHandAndPayCost(state, seatId, handIndex) {
   return playedCard;
 }
 
-function playCardFromHand(state, seatId, handIndex, target = null, deps = {}) {
+function playCardFromHand(state, seatId, handIndex, target = null, deps = {}, options = {}) {
   ensureState(state);
+
+  const allowDuringSelection = Boolean(options.allowDuringSelection || false);
 
   const player = U.getPlayer(state, seatId);
   const index = Number(handIndex);
   const card = player?.hand?.[index] || null;
 
-  const playCheck = validateCanPlayCard(state, seatId, player, card);
+  const playCheck = validateCanPlayCard(state, seatId, player, card, {
+    allowDuringSelection
+  });
+
   if (!playCheck.ok) {
     return { ok: false, state, message: playCheck.message };
   }
@@ -422,7 +429,9 @@ function resolvePendingCardTarget(state, seatId, target, deps = {}) {
     return { ok: false, state, message: targetCheck.message };
   }
 
-  return playCardFromHand(state, seatId, handIndex, target, deps);
+  return playCardFromHand(state, seatId, handIndex, target, deps, {
+    allowDuringSelection: true
+  });
 }
 
 function handleHandCardClicked(state, seatId, payload, deps = {}) {
