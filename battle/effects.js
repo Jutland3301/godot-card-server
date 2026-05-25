@@ -6,6 +6,7 @@ const S = require("./state");
 const CardOps = require("./card_ops");
 const Combat = require("./combat");
 const Targets = require("./targets");
+const { makeCardFromId } = require("./card_database");
 
 function lazyTriggers() {
   try {
@@ -369,6 +370,8 @@ function applyEffectToTarget(state, sourceSeat, sourceCard, target, ability = {}
     default:
       return { ok: false, pending: false, message: `Unsupported targeted effect: ${effectId}.` };
   }
+    case "masterwork_of_art":
+      return resolveMasterworkOfArt(state, playerId);
 }
 
 function resolveSpellOrCardEffect(state, sourceSeat, sourceCard, target = null, ability = {}, ctx = {}) {
