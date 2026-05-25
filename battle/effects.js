@@ -370,8 +370,6 @@ function applyEffectToTarget(state, sourceSeat, sourceCard, target, ability = {}
     default:
       return { ok: false, pending: false, message: `Unsupported targeted effect: ${effectId}.` };
   }
-    case "masterwork_of_art":
-      return resolveMasterworkOfArt(state, playerId);
 }
 
 function resolveSpellOrCardEffect(state, sourceSeat, sourceCard, target = null, ability = {}, ctx = {}) {
@@ -1475,45 +1473,7 @@ function resolveTarnishedBookshelfSelectedCard(state, sourceSeat, sourceCard, se
   addLog(state, `${U.cardName(sourceCard)} added 4 copies of ${U.cardName(selectedCard)} to deck.`);
 }
 
-function resolveMasterworkOfArt(state, playerId) {
-  const player = state.players[playerId];
-  if (!player) return false;
 
-  if (!Array.isArray(player.board)) player.board = [];
-  if (!Array.isArray(player.graveyard)) player.graveyard = [];
-
-  if (player.board.length >= 5) {
-    return false;
-  }
-
-  const burntCards = player.graveyard.splice(0, player.graveyard.length);
-
-  const traitSet = new Set();
-  for (const card of burntCards) {
-    const traits = Array.isArray(card.traits) ? card.traits : [];
-    for (const trait of traits) {
-      if (trait) traitSet.add(String(trait));
-    }
-  }
-
-  const doodle = makeCardFromId("doodle");
-
-  doodle.traits = Array.from(traitSet);
-  doodle.max_attacks_per_turn = Math.max(1, doodle.traits.length);
-  doodle.attacks_this_turn = 0;
-
-  doodle.keywords = Array.isArray(doodle.keywords) ? doodle.keywords : [];
-  if (!doodle.keywords.includes("rush")) {
-    doodle.keywords.push("rush");
-  }
-
-  doodle.can_attack = doodle.keywords.includes("rush") || doodle.keywords.includes("haste");
-  doodle.exhausted = !doodle.can_attack;
-  doodle.summoned_this_turn = true;
-
-  player.board.push(doodle);
-  return true;
-}
 module.exports = {
   getAmount,
   getEffectiveSpellDamage,
