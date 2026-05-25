@@ -373,12 +373,18 @@ function playSpellCard(state, seatId, playedCard, target = null, deps = {}) {
   );
 
   if (result && result.pending) {
-    /*
-      手札選択系はカードを消費済みのままpendingにする。
-      選択完了時にEffects側で墓地へ送る。
-    */
     S.syncLegacy(state);
     return { ok: true, state };
+  }
+
+  if (result && result.ok === false) {
+    clearPendingState(state);
+    S.syncLegacy(state);
+    return {
+      ok: false,
+      state,
+      message: result.message || "Spell effect failed."
+    };
   }
 
   Triggers.resolveOnSpellPlayed(state, seatId, playedCard, deps);
