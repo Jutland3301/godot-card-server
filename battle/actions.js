@@ -33,6 +33,7 @@ function clearPendingState(state) {
   state.selecting_hand_card = false;
   state.pending_hand_selection_effect = "";
   state.pending_hand_selection_owner = "";
+  state.pending_card_selection_zone = "hand";
   state.pending_hand_candidate_indexes = [];
 
   if (!Array.isArray(state.pending_deaths)) {

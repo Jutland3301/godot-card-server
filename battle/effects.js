@@ -48,12 +48,13 @@ function getTargetPlayer(state, target) {
   return Targets.getPlayerByTarget(state, target);
 }
 
-function beginHandSelection(state, sourceSeat, effectId, sourceCard, candidateIndexes, message) {
+function beginHandSelection(state, sourceSeat, effectId, sourceCard, candidateIndexes, message, sourceZone = "hand") {
   state.selecting_hand_card = true;
   state.selecting_target = false;
   state.pending_action_type = C.ACTION_HAND_SELECTION;
   state.pending_hand_selection_effect = String(effectId || "");
   state.pending_hand_selection_owner = U.seatToOwnerId(sourceSeat);
+  state.pending_card_selection_zone = sourceZone === "graveyard" ? "graveyard" : "hand";
   state.pending_card_owner = U.seatToOwnerId(sourceSeat);
   state.pending_card = U.copyCardData(sourceCard);
   state.pending_hand_candidate_indexes = Array.isArray(candidateIndexes)
@@ -75,6 +76,7 @@ function clearHandSelection(state) {
   state.selecting_hand_card = false;
   state.pending_hand_selection_effect = "";
   state.pending_hand_selection_owner = "";
+  state.pending_card_selection_zone = "hand";
   state.pending_hand_candidate_indexes = [];
   state.pending_action_type = C.ACTION_NONE;
   state.pending_card = null;
@@ -82,15 +84,16 @@ function clearHandSelection(state) {
   state.pending_ability = {};
 }
 
-function getCandidateIndexesByPredicate(player, predicate) {
+function getCandidateIndexesByPredicate(player, predicate, sourceZone = "hand") {
   const indexes = [];
+  const cards = sourceZone === "graveyard" ? player?.graveyard : player?.hand;
 
-  if (!player || !Array.isArray(player.hand)) {
+  if (!player || !Array.isArray(cards)) {
     return indexes;
   }
 
-  for (let i = 0; i < player.hand.length; i++) {
-    const card = player.hand[i];
+  for (let i = 0; i < cards.length; i++) {
+    const card = cards[i];
     if (!card) continue;
 
     if (typeof predicate !== "function" || predicate(card, i)) {
@@ -133,21 +136,20 @@ function resolveHandSelection(state, sourceSeat, handIndex, ctx = {}) {
     return { ok: false, state, message: "Player is missing." };
   }
 
-  const index = Number(handIndex);
-  if (index < 0 || index >= player.hand.length) {
-    return { ok: false, state, message: "Invalid hand selection index." };
-  }
-
   const candidates = Array.isArray(state.pending_hand_candidate_indexes)
     ? state.pending_hand_candidate_indexes.map(Number)
     : [];
 
-  if (candidates.length > 0 && !candidates.includes(index)) {
-    return { ok: false, state, message: "Selected card is not a valid candidate." };
+  const selectionIndex = Number(handIndex);
+  if (selectionIndex < 0 || selectionIndex >= candidates.length) {
+    return { ok: false, state, message: "Invalid card selection index." };
   }
 
+  const sourceZone = state.pending_card_selection_zone === "graveyard" ? "graveyard" : "hand";
+  const sourceCards = sourceZone === "graveyard" ? player.graveyard : player.hand;
+  const sourceIndex = candidates[selectionIndex];
   const sourceCard = state.pending_card || null;
-  const selectedCard = player.hand[index] || null;
+  const selectedCard = sourceCards[sourceIndex] || null;
   const effect = String(state.pending_hand_selection_effect || "");
 
   if (!sourceCard || !selectedCard) {
@@ -170,6 +172,14 @@ function resolveHandSelection(state, sourceSeat, handIndex, ctx = {}) {
 
     case C.EFFECT_DUEL_ON_SEA:
       resolveDuelOnSeaSelectedCard(state, sourceSeat, sourceCard, selectedCard, ctx);
+      break;
+
+    case C.EFFECT_ENCOMPASSED_COMPASS:
+      resolveEncompassedCompassSelectedCard(state, sourceSeat, sourceCard, selectedCard);
+      break;
+
+    case C.EFFECT_MONOCHRO_BLUEPRINT:
+      resolveMonochroBlueprintSelectedCard(state, sourceSeat, sourceCard, selectedCard, ctx);
       break;
 
     case C.EFFECT_TARNISHED_BOOKSHELF:
@@ -458,8 +468,7 @@ function resolveSpellOrCardEffect(state, sourceSeat, sourceCard, target = null, 
       return { ok: true, pending: false };
 
     case C.EFFECT_ENCOMPASSED_COMPASS:
-      resolveEncompassedCompass(state, sourceSeat, sourceCard);
-      return { ok: true, pending: false };
+      return resolveEncompassedCompass(state, sourceSeat, sourceCard);
 
     case C.EFFECT_LIGHTNING_CEREMONY:
       return resolveLightningCeremony(state, sourceSeat, sourceCard);
@@ -491,8 +500,7 @@ function resolveSpellOrCardEffect(state, sourceSeat, sourceCard, target = null, 
       return { ok: true, pending: false };
 
     case C.EFFECT_MONOCHRO_BLUEPRINT:
-      resolveMonochroBlueprint(state, sourceSeat, sourceCard, ctx);
-      return { ok: true, pending: false };
+      return resolveMonochroBlueprint(state, sourceSeat, sourceCard, ctx);
 
     case C.EFFECT_BOOK_OF_RUSHWATER:
       resolveBookOfRushwater(state, sourceSeat, sourceCard, ctx);
@@ -847,29 +855,39 @@ function resolveRimeOfTheAncientMariner(state, sourceSeat, sourceCard, ctx = {})
 
 function resolveEncompassedCompass(state, sourceSeat, sourceCard) {
   const owner = U.getPlayer(state, sourceSeat);
-  if (!owner) return;
+  if (!owner) return { ok: true, pending: false };
 
   if (owner.board.length >= C.MAX_BOARD_SIZE) {
     addLog(state, `${U.cardName(sourceCard)} failed. Board was full.`);
-    return;
+    return { ok: true, pending: false };
   }
 
-  let targetIndex = -1;
+  const candidates = getCandidateIndexesByPredicate(owner, card => U.isUnit(card), "graveyard");
 
-  for (let i = owner.graveyard.length - 1; i >= 0; i--) {
-    const graveCard = owner.graveyard[i];
-    if (graveCard && U.isUnit(graveCard)) {
-      targetIndex = i;
-      break;
-    }
-  }
-
-  if (targetIndex < 0) {
+  if (candidates.length <= 0) {
     addLog(state, `${U.cardName(sourceCard)} found no unit card in graveyard.`);
+    return { ok: true, pending: false };
+  }
+
+  return beginHandSelection(
+    state,
+    sourceSeat,
+    C.EFFECT_ENCOMPASSED_COMPASS,
+    sourceCard,
+    candidates,
+    "Choose a unit to resurrect.",
+    "graveyard"
+  );
+}
+
+function resolveEncompassedCompassSelectedCard(state, sourceSeat, sourceCard, resurrected) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner || !resurrected || !owner.graveyard.includes(resurrected) || !U.isUnit(resurrected)) {
+    addLog(state, `${U.cardName(sourceCard)} selection is no longer valid.`);
     return;
   }
 
-  const resurrected = owner.graveyard.splice(targetIndex, 1)[0];
+  owner.graveyard.splice(owner.graveyard.indexOf(resurrected), 1);
 
   resurrected.hp = resurrected.max_hp;
   resurrected.can_attack = false;
@@ -989,24 +1007,38 @@ function resolveEconomicsOverflow(state, sourceSeat, sourceCard) {
 
 function resolveMonochroBlueprint(state, sourceSeat, sourceCard, ctx = {}) {
   const owner = U.getPlayer(state, sourceSeat);
-  if (!owner) return;
+  if (!owner) return { ok: true, pending: false };
 
-  const targetIndex = (() => {
-    for (let i = owner.graveyard.length - 1; i >= 0; i--) {
-      const card = owner.graveyard[i];
-      if (card && U.isUnit(card) && U.hasTrait(card, "gadget")) {
-        return i;
-      }
-    }
-    return -1;
-  })();
+  const candidates = getCandidateIndexesByPredicate(
+    owner,
+    card => U.isUnit(card) && U.hasTrait(card, "gadget"),
+    "graveyard"
+  );
 
-  if (targetIndex < 0) {
+  if (candidates.length <= 0) {
     addLog(state, `${U.cardName(sourceCard)} found no Gadget unit in graveyard.`);
+    return { ok: true, pending: false };
+  }
+
+  return beginHandSelection(
+    state,
+    sourceSeat,
+    C.EFFECT_MONOCHRO_BLUEPRINT,
+    sourceCard,
+    candidates,
+    "Choose a Gadget unit to resurrect.",
+    "graveyard"
+  );
+}
+
+function resolveMonochroBlueprintSelectedCard(state, sourceSeat, sourceCard, baseCard, ctx = {}) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner || !baseCard || !owner.graveyard.includes(baseCard) || !U.isUnit(baseCard) || !U.hasTrait(baseCard, "gadget")) {
+    addLog(state, `${U.cardName(sourceCard)} selection is no longer valid.`);
     return;
   }
 
-  const baseCard = owner.graveyard.splice(targetIndex, 1)[0];
+  owner.graveyard.splice(owner.graveyard.indexOf(baseCard), 1);
   const copies = [baseCard, U.copyCardData(baseCard), U.copyCardData(baseCard)];
 
   let summoned = 0;

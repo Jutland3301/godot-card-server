@@ -264,6 +264,7 @@ function normalizeState(state) {
 
   state.pending_hand_selection_effect = String(state.pending_hand_selection_effect || "");
   state.pending_hand_selection_owner = String(state.pending_hand_selection_owner || "");
+  state.pending_card_selection_zone = state.pending_card_selection_zone === "graveyard" ? "graveyard" : "hand";
   state.pending_hand_candidate_indexes = normalizeArray(state.pending_hand_candidate_indexes).map(index => asNumber(index, -1)).filter(index => index >= 0);
 
   state.pending_deaths = normalizeArray(state.pending_deaths);
@@ -364,6 +365,7 @@ function clearSelection(state) {
 
   state.pending_hand_selection_effect = "";
   state.pending_hand_selection_owner = "";
+  state.pending_card_selection_zone = "hand";
   state.pending_hand_candidate_indexes = [];
 }
 
@@ -544,6 +546,7 @@ function makePublicState(state) {
 
     pending_hand_selection_effect: state.pending_hand_selection_effect,
     pending_hand_selection_owner: state.pending_hand_selection_owner,
+    pending_card_selection_zone: state.pending_card_selection_zone,
     pending_hand_candidate_indexes: state.pending_hand_candidate_indexes.slice(),
 
     turn_time_left: state.turn_time_left,

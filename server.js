@@ -965,6 +965,7 @@ function makeInitialMatchState(match) {
     pending_summons: [],
     pending_hand_selection_effect: "",
     pending_hand_selection_owner: "",
+    pending_card_selection_zone: "hand",
     pending_hand_candidate_indexes: []
   };
 
