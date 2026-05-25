@@ -231,7 +231,9 @@ function validateCanPlayCard(state, seatId, player, card, options = {}) {
   }
 
   if (U.isUnit(card) && Array.isArray(player.board) && player.board.length >= C.MAX_BOARD_SIZE) {
-    return { ok: false, message: "Board is full." };
+    if (String(card.card_id || "") !== "nimbus_outpost") {
+      return { ok: false, message: "Board is full." };
+    }
   }
 
   if (U.isSpell(card)) {
@@ -324,6 +326,50 @@ function playUnitCard(state, seatId, playedCard, target = null, deps = {}) {
   const player = U.getPlayer(state, seatId);
   if (!player) {
     return { ok: false, state, message: "Player is missing." };
+  }
+
+  if (String(playedCard.card_id || "") === "nimbus_outpost") {
+    if (!target || String(target.type || "") !== "unit") {
+      return { ok: false, state, message: "Nimbus Outpost needs an allied unit target." };
+    }
+
+    const targetSeat = U.normalizeOwnerToSeat(state, target.owner_seat ?? target.owner ?? target.owner_id ?? seatId);
+    const targetIndex = Number(target.board_index ?? target.index ?? -1);
+
+    if (targetSeat !== seatId) {
+      return { ok: false, state, message: "Nimbus Outpost must destroy your own unit." };
+    }
+
+    if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= player.board.length) {
+      return { ok: false, state, message: "Nimbus Outpost target not found." };
+    }
+
+    const sacrificed = player.board[targetIndex];
+    if (!sacrificed) {
+      return { ok: false, state, message: "Nimbus Outpost target not found." };
+    }
+
+    player.board.splice(targetIndex, 1);
+
+    playedCard.attack = Number(playedCard.attack || 0) + Number(sacrificed.attack || 0);
+    playedCard.hp = Number(playedCard.hp || 0) + Number(sacrificed.hp || 0);
+    playedCard.max_hp = Number(playedCard.max_hp || playedCard.hp || 0) + Number(sacrificed.hp || 0);
+    playedCard.base_attack = Number(playedCard.attack || 0);
+    playedCard.base_hp = Number(playedCard.max_hp || playedCard.hp || 0);
+
+    Combat.applySummonState(playedCard, player);
+    player.board.push(playedCard);
+
+    CardOps.moveCardToGraveyard(player, sacrificed);
+    CardOps.incrementPlayedTraitCounts(player, playedCard);
+
+    Triggers.resolveOnUnitPlayed(state, seatId, playedCard, deps);
+
+    Combat.processDeathQueue(state, deps);
+    addLog(state, `${player.name} sacrificed ${U.cardName(sacrificed)} to play ${U.cardName(playedCard)}.`);
+    S.syncLegacy(state);
+
+    return { ok: true, state };
   }
 
   Combat.applySummonState(playedCard, player);
