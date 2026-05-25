@@ -1181,15 +1181,21 @@ function resolveLamentationOfLife(state, sourceSeat, sourceCard, targetSeat, uni
 }
 
 function resolvePoetryOfResilience(state, sourceSeat, sourceCard, targetUnit) {
-  if (!targetUnit) return;
+  if (!targetUnit) {
+    addLog(state, "Invalid Poetry of Resilience target.");
+    return;
+  }
 
-  if (Number(targetUnit.hp || 0) >= Number(targetUnit.max_hp || 0)) {
+  const hp = Number(targetUnit.hp || 0);
+  const maxHp = Number(targetUnit.max_hp || targetUnit.base_hp || hp || 0);
+
+  if (hp >= maxHp) {
     addLog(state, `${U.cardName(sourceCard)} can only target a damaged allied unit.`);
     return;
   }
 
   const ability = U.getAbilities(sourceCard)[0] || {};
-  const armorGain = Number(ability.armor || 3);
+  const armorGain = Number(ability.armor || sourceCard.power || 3);
   const traitName = U.normalizeLowerString(ability.trait || "music");
 
   targetUnit.armor = Number(targetUnit.armor || 0) + armorGain;
