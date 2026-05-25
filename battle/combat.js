@@ -918,22 +918,26 @@ function attackUnit(state, attackerSeat, attackerIndex, defenderSeat, defenderIn
 
   const attackerDamage = Math.max(0, Number(attacker.attack || 0));
   const defenderDamage = Math.max(0, Number(defender.attack || 0));
-
-  const attackerDeadly = hasKeywordPlain(attacker, C.KEYWORD_DEADLY || "deadly") || hasKeywordPlain(attacker, "deadly");
-  const defenderDeadly = hasKeywordPlain(defender, C.KEYWORD_DEADLY || "deadly") || hasKeywordPlain(defender, "deadly");
-
-  if (attackerDeadly && attackerDamage > 0) {
+  
+  const attackerDeadly =
+    hasKeywordPlain(attacker, C.KEYWORD_DEADLY || "deadly") ||
+    hasKeywordPlain(attacker, "deadly");
+  
+  const defenderDeadly =
+    hasKeywordPlain(defender, C.KEYWORD_DEADLY || "deadly") ||
+    hasKeywordPlain(defender, "deadly");
+  
+  const actualDamageToDefender = damageUnit(state, defenderSeat, defender, attackerDamage, ctx);
+  const actualDamageToAttacker = damageUnit(state, attackerSeat, attacker, defenderDamage, ctx);
+  
+  if (attackerDeadly && actualDamageToDefender > 0 && !isDeadUnit(defender)) {
     defender.hp = 0;
     queueDeath(state, defenderSeat, defender);
-  } else {
-    damageUnit(state, defenderSeat, defender, attackerDamage, ctx);
   }
-
-  if (defenderDeadly && defenderDamage > 0) {
+  
+  if (defenderDeadly && actualDamageToAttacker > 0 && !isDeadUnit(attacker)) {
     attacker.hp = 0;
     queueDeath(state, attackerSeat, attacker);
-  } else {
-    damageUnit(state, attackerSeat, attacker, defenderDamage, ctx);
   }
 
   const attackerRicochet = hasKeywordPlain(attacker, C.KEYWORD_RICOCHET || "ricochet") || hasKeywordPlain(attacker, "ricochet");
