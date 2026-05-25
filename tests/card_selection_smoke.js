@@ -48,6 +48,7 @@ function makeState() {
   assert.strictEqual(result.pending, true, "Encompassed Compass should wait for graveyard selection.");
   assert.strictEqual(state.pending_card_selection_zone, "graveyard", "Compass candidates should come from graveyard.");
   assert.deepStrictEqual(state.pending_hand_candidate_indexes, [0, 1], "All unit graveyard candidates should be visible.");
+  assert.strictEqual(State.makePublicState(state).pending_card_selection_zone, "graveyard", "Graveyard selection zone should be sent to clients.");
 
   Effects.resolveHandSelection(state, "A", 1);
   assert.ok(state.player1.board.includes(chosenUnit), "Compass should resurrect the chosen graveyard unit.");
