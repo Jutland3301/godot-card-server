@@ -5,6 +5,9 @@ const { WebSocketServer, WebSocket } = require("ws");
 const { Pool } = require("pg");
 const { makeCardFromId, getAvailableCardIds } = require("./cards_database");
 const BattleEngine = require("./battle_engine");
+const { createAuthService } = require("./auth_service");
+const { createAuthRoutes } = require("./auth_routes");
+const { createAuthMiddleware } = require("./auth_middleware");
 
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || "";
@@ -129,6 +132,10 @@ async function dbQuery(text, params = []) {
   return await pool.query(text, params);
 }
 
+const authService = createAuthService({ query: dbQuery });
+const authMiddleware = createAuthMiddleware({ authService, sendJson });
+const authRoutes = createAuthRoutes({ authService, readJsonBody, sendJson });
+
 let deckSchemaReady = false;
 
 async function ensureDeckSchema() {
@@ -151,76 +158,8 @@ async function ensureDeckSchema() {
   deckSchemaReady = true;
 }
 
-function makeUserToken(userId) {
-  return `user:${userId}`;
-}
-
-function parseUserToken(token) {
-  const text = String(token || "").trim();
-
-  if (!text.startsWith("user:")) {
-    return 0;
-  }
-
-  const id = Number(text.slice("user:".length));
-
-  if (!Number.isInteger(id) || id <= 0) {
-    return 0;
-  }
-
-  return id;
-}
-
-function getBearerToken(req) {
-  const value = String(req.headers.authorization || "");
-
-  if (!value.startsWith("Bearer ")) {
-    return "";
-  }
-
-  return value.slice("Bearer ".length).trim();
-}
-
-async function getUserByRequest(req) {
-  const token = getBearerToken(req);
-  const userId = parseUserToken(token);
-
-  if (userId <= 0) {
-    return null;
-  }
-
-  const result = await dbQuery(
-    "SELECT id, username FROM users WHERE id = $1 LIMIT 1",
-    [userId]
-  );
-
-  if (result.rows.length <= 0) {
-    return null;
-  }
-
-  return result.rows[0];
-}
-
 async function requireUser(req, res) {
-  const user = await getUserByRequest(req);
-
-  if (!user) {
-    sendJson(res, 401, {
-      ok: false,
-      error: "Unauthorized"
-    });
-    return null;
-  }
-
-  return user;
-}
-
-function normalizeUsername(value) {
-  return String(value || "").trim();
-}
-
-function normalizePassword(value) {
-  return String(value || "").trim();
+  return await authMiddleware.requireAuth(req, res);
 }
 
 function normalizeSide(value) {
@@ -252,95 +191,6 @@ function countCards(cardIds) {
 // ============================================================================
 // HTTP API
 // ============================================================================
-async function handleRegister(req, res) {
-  const body = await readJsonBody(req);
-
-  if (body === null) {
-    sendJson(res, 400, { ok: false, error: "Invalid JSON" });
-    return;
-  }
-
-  const username = normalizeUsername(body.username);
-  const password = normalizePassword(body.password);
-
-  if (username.length < 3) {
-    sendJson(res, 400, { ok: false, error: "Username must be at least 3 characters." });
-    return;
-  }
-
-  if (password.length < 3) {
-    sendJson(res, 400, { ok: false, error: "Password must be at least 3 characters." });
-    return;
-  }
-
-  try {
-    const result = await dbQuery(
-      "INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username",
-      [username, password]
-    );
-
-    const user = result.rows[0];
-
-    await dbQuery(
-      "INSERT INTO rank_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
-      [user.id]
-    );
-
-    sendJson(res, 200, {
-      ok: true,
-      user: { id: user.id, username: user.username },
-      token: makeUserToken(user.id)
-    });
-  } catch (error) {
-    if (String(error.message).includes("duplicate") || error.code === "23505") {
-      sendJson(res, 409, { ok: false, error: "Username already exists." });
-      return;
-    }
-
-    throw error;
-  }
-}
-
-async function handleLogin(req, res) {
-  const body = await readJsonBody(req);
-
-  if (body === null) {
-    sendJson(res, 400, { ok: false, error: "Invalid JSON" });
-    return;
-  }
-
-  const username = normalizeUsername(body.username);
-  const password = normalizePassword(body.password);
-
-  const result = await dbQuery(
-    "SELECT id, username, password FROM users WHERE username = $1 LIMIT 1",
-    [username]
-  );
-
-  if (result.rows.length <= 0) {
-    sendJson(res, 401, { ok: false, error: "Invalid username or password." });
-    return;
-  }
-
-  const user = result.rows[0];
-
-  if (String(user.password) !== password) {
-    sendJson(res, 401, { ok: false, error: "Invalid username or password." });
-    return;
-  }
-
-  await dbQuery(
-    "INSERT INTO rank_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
-    [user.id]
-  );
-
-  sendJson(res, 200, {
-    ok: true,
-    user: { id: user.id, username: user.username },
-    token: makeUserToken(user.id)
-  });
-}
-
 async function handleCollection(req, res) {
   const user = await requireUser(req, res);
 
@@ -815,12 +665,22 @@ async function handleHttp(req, res) {
     }
 
     if (req.method === "POST" && path === "/register") {
-      await handleRegister(req, res);
+      await authRoutes.register(req, res);
       return;
     }
 
     if (req.method === "POST" && path === "/login") {
-      await handleLogin(req, res);
+      await authRoutes.login(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && path === "/logout") {
+      await authRoutes.logout(req, res);
+      return;
+    }
+
+    if (req.method === "GET" && path === "/me") {
+      await authRoutes.me(req, res, requireUser);
       return;
     }
 
@@ -1385,11 +1245,17 @@ function tryMakeMatch() {
       seats: {
         A: {
           client_id: entryA.client_id,
+          user_id: clientA.user_id,
+          username: clientA.username,
+          display_name: clientA.display_name,
           deck_data: entryA.deck_data,
           side: entryA.side
         },
         B: {
           client_id: entryB.client_id,
+          user_id: clientB.user_id,
+          username: clientB.username,
+          display_name: clientB.display_name,
           deck_data: entryB.deck_data,
           side: entryB.side
         }
@@ -1430,11 +1296,23 @@ function tryMakeMatch() {
       matchId,
       "A=",
       entryA.client_id,
+      "user_id=",
+      clientA.user_id,
+      "display_name=",
+      clientA.display_name,
       entryA.side,
       "B=",
       entryB.client_id,
+      "user_id=",
+      clientB.user_id,
+      "display_name=",
+      clientB.display_name,
       entryB.side
     );
+
+    if (clientA.user_id === clientB.user_id) {
+      console.log("[MATCH] Same user test match allowed. user_id=", clientA.user_id);
+    }
 
     sendMatchFound(matchId);
   }
@@ -1565,17 +1443,42 @@ function destroyMatch(matchId, reason = "Match destroyed.") {
 // ============================================================================
 // WebSocket
 // ============================================================================
-function handleClientMessage(client, message) {
+async function handleClientMessage(client, message) {
   const type = String(message.type || "");
 
   switch (type) {
     case "auth": {
-      client.user_id = String(message.user_id || "");
-      safeSend(client.ws, { type: "auth_ok", user_id: client.user_id });
+      const user = await authService.getUserBySessionToken(String(message.token || ""));
+
+      if (!user) {
+        client.is_authenticated = false;
+        safeSend(client.ws, { type: "auth_error", message: "Invalid token" });
+        return;
+      }
+
+      client.user_id = user.id;
+      client.username = user.username;
+      client.display_name = user.display_name;
+      client.is_authenticated = true;
+
+      safeSend(client.ws, { type: "auth_ok", user });
+      console.log(
+        "[AUTH] client authenticated",
+        client.client_id,
+        "user_id=",
+        client.user_id,
+        "display_name=",
+        client.display_name
+      );
       return;
     }
 
     case "queue_join": {
+      if (!client.is_authenticated) {
+        safeSend(client.ws, { type: "auth_error", message: "Authentication required." });
+        return;
+      }
+
       const deckData = message.deck_data || {};
       const validationError = validateDeckData(deckData);
 
@@ -1599,7 +1502,18 @@ function handleClientMessage(client, message) {
         joined_at: Date.now()
       });
 
-      console.log("[QUEUE] joined", client.client_id, "side=", side, "queue=", queue.length);
+      console.log(
+        "[QUEUE] joined",
+        client.client_id,
+        "user_id=",
+        client.user_id,
+        "display_name=",
+        client.display_name,
+        "side=",
+        side,
+        "queue=",
+        queue.length
+      );
 
       safeSend(client.ws, {
         type: "queue_joined",
@@ -1620,6 +1534,11 @@ function handleClientMessage(client, message) {
     }
 
     case "battle_action": {
+      if (!client.is_authenticated) {
+        safeSend(client.ws, { type: "auth_error", message: "Authentication required." });
+        return;
+      }
+
       const matchId = String(message.match_id || "");
       const seatId = String(message.seat_id || "");
       const action = String(message.action || "");
@@ -1860,7 +1779,10 @@ wss.on("connection", (ws, req) => {
     role: "client",
     ws,
     client_id: clientId,
-    user_id: "",
+    user_id: 0,
+    username: "",
+    display_name: "",
+    is_authenticated: false,
     queued: false,
     match_id: "",
     seat_id: ""
@@ -1886,8 +1808,12 @@ wss.on("connection", (ws, req) => {
         return;
       }
 
-      console.log("[CLIENT MESSAGE]", clientId, JSON.stringify(message));
-      handleClientMessage(client, message);
+      console.log("[CLIENT MESSAGE]", clientId, "type=", String(message.type || ""));
+      Promise.resolve(handleClientMessage(client, message)).catch((error) => {
+        console.error("[CLIENT MESSAGE ERROR]", clientId);
+        console.error(error && error.stack ? error.stack : error);
+        sendError(ws, "Server failed while handling client message.");
+      });
     } catch (error) {
       console.error("[CLIENT MESSAGE ERROR]", clientId);
       console.error(error && error.stack ? error.stack : error);
@@ -1915,6 +1841,17 @@ wss.on("connection", (ws, req) => {
 
 setInterval(tickMatchTimers, MATCH_TIMER_TICK_MS);
 
-server.listen(PORT, () => {
-  console.log(`[SERVER] Node authoritative gateway + save API listening on port ${PORT}`);
+async function startServer() {
+  if (pool) {
+    await authService.ensureSchema();
+  }
+
+  server.listen(PORT, () => {
+    console.log(`[SERVER] Node authoritative gateway + save API listening on port ${PORT}`);
+  });
+}
+
+startServer().catch((error) => {
+  console.error("[SERVER START ERROR]", error && error.stack ? error.stack : error);
+  process.exitCode = 1;
 });
