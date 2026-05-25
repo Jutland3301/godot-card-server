@@ -231,23 +231,34 @@ function applyDamageToUnit(unit, amount) {
     return 0;
   }
 
-  let remaining = Math.max(0, Number(amount || 0));
-  let actualDamage = 0;
-
+  const incomingDamage = Math.max(0, Number(amount || 0));
   const armor = Math.max(0, Number(unit.armor || 0));
+  const actualDamage = Math.max(0, incomingDamage - armor);
 
-  if (armor > 0 && remaining > 0) {
-    const blocked = Math.min(armor, remaining);
-    unit.armor = armor - blocked;
-    remaining -= blocked;
-  }
-
-  if (remaining > 0) {
-    unit.hp = Number(unit.hp || 0) - remaining;
-    actualDamage += remaining;
+  if (actualDamage > 0) {
+    unit.hp = Number(unit.hp || 0) - actualDamage;
   }
 
   return actualDamage;
+}
+
+function applyFlyingFortressPrevention(attacker, defender, damageToAttacker, damageToDefender) {
+  const damage = {
+    attacker: damageToAttacker,
+    defender: damageToDefender
+  };
+
+  if (attacker && U.cardId(attacker) === "flying_fortress" && !attacker.flying_fortress_prevent_used_this_turn) {
+    damage.attacker = 0;
+    attacker.flying_fortress_prevent_used_this_turn = true;
+  }
+
+  if (defender && U.cardId(defender) === "flying_fortress" && !defender.flying_fortress_prevent_used_this_turn) {
+    damage.defender = 0;
+    defender.flying_fortress_prevent_used_this_turn = true;
+  }
+
+  return damage;
 }
 
 function damageUnit(state, ownerSeat, unitOrIndex, amount, ctx = {}) {
@@ -918,6 +929,7 @@ function attackUnit(state, attackerSeat, attackerIndex, defenderSeat, defenderIn
 
   const attackerDamage = Math.max(0, Number(attacker.attack || 0));
   const defenderDamage = Math.max(0, Number(defender.attack || 0));
+  const combatDamage = applyFlyingFortressPrevention(attacker, defender, defenderDamage, attackerDamage);
   
   const attackerDeadly =
     hasKeywordPlain(attacker, C.KEYWORD_DEADLY || "deadly") ||
@@ -927,8 +939,8 @@ function attackUnit(state, attackerSeat, attackerIndex, defenderSeat, defenderIn
     hasKeywordPlain(defender, C.KEYWORD_DEADLY || "deadly") ||
     hasKeywordPlain(defender, "deadly");
   
-  const actualDamageToDefender = damageUnit(state, defenderSeat, defender, attackerDamage, ctx);
-  const actualDamageToAttacker = damageUnit(state, attackerSeat, attacker, defenderDamage, ctx);
+  const actualDamageToDefender = damageUnit(state, defenderSeat, defender, combatDamage.defender, ctx);
+  const actualDamageToAttacker = damageUnit(state, attackerSeat, attacker, combatDamage.attacker, ctx);
   
   if (attackerDeadly && actualDamageToDefender > 0 && !isDeadUnit(defender)) {
     defender.hp = 0;
@@ -942,20 +954,17 @@ function attackUnit(state, attackerSeat, attackerIndex, defenderSeat, defenderIn
 
   const attackerRicochet = hasKeywordPlain(attacker, C.KEYWORD_RICOCHET || "ricochet") || hasKeywordPlain(attacker, "ricochet");
 
-  if (attackerRicochet && attackerDamage > 0) {
-    damagePlayer(state, defenderSeat, attackerDamage);
+  if (attackerRicochet && actualDamageToDefender > 0) {
+    damagePlayer(state, defenderSeat, actualDamageToDefender);
   }
 
   spendAttack(attacker);
 
   const defenderWillDie = isDeadUnit(defender);
-  const attackerWillSurvive = !isDeadUnit(attacker);
-
   processDeathQueue(state, ctx);
 
   if (
     defenderWillDie &&
-    attackerWillSurvive &&
     Triggers &&
     typeof Triggers.resolveWhenKillsAbilities === "function"
   ) {

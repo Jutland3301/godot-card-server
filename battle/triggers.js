@@ -1472,22 +1472,19 @@ function drawCardThenIncreaseCost(state, ownerSeat, sourceCard, ability) {
   const costIncrease = Number(ability.cost_increase || 3);
 
   for (let i = 0; i < amount; i++) {
-    if (!owner.deck || owner.deck.length <= 0) {
-      addLog(state, `${U.cardName(sourceCard)} tried to draw, but deck was empty.`);
+    const drawnCard = CardOps.drawOne(state, ownerSeat);
+
+    if (!drawnCard) {
       return;
     }
 
-    const drawnCard = owner.deck.pop();
-
     drawnCard.cost = Math.max(0, Number(drawnCard.cost || 0) + costIncrease);
 
-    if (owner.hand.length >= C.MAX_HAND_SIZE) {
-      owner.graveyard.push(drawnCard);
-      addLog(state, `${U.cardName(sourceCard)} drew ${U.cardName(drawnCard)}, but hand was full so it went to graveyard.`);
+    if (!owner.hand.includes(drawnCard)) {
+      addLog(state, `${U.cardName(sourceCard)} increased the cost of burned ${U.cardName(drawnCard)} by ${costIncrease}.`);
       continue;
     }
 
-    owner.hand.push(drawnCard);
     addLog(state, `${U.cardName(sourceCard)} drew ${U.cardName(drawnCard)}. It costs ${costIncrease} more.`);
   }
 }

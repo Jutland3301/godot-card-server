@@ -13,9 +13,13 @@ function drawOne(state, seatId) {
   if (!Array.isArray(player.graveyard)) player.graveyard = [];
 
   if (player.deck.length <= 0) {
-    player.hp = Number(player.hp || 0) - 1;
-    S.addLog(state, `${player.name} took 1 fatigue damage.`);
-
+    state.game_over = true;
+    state.winner_seat = U.otherSeat(seatId);
+    state.loser_seat = seatId;
+    state.turn_timer_active = false;
+    state.turn_timer_timeout_handled = true;
+    state.turn_time_left = 0.0;
+    S.addLog(state, `${player.name} loses because they cannot draw a card.`);
     S.syncLegacy(state);
     return null;
   }
@@ -39,7 +43,11 @@ function drawCards(state, seatId, amount) {
 
   for (let i = 0; i < count; i++) {
     const card = drawOne(state, seatId);
-    if (card) drawn.push(card);
+    if (card) {
+      drawn.push(card);
+    } else if (state.game_over) {
+      break;
+    }
   }
 
   return drawn;

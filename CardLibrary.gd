@@ -1355,27 +1355,21 @@ func load_card_database() -> void:
 		],"image_path": "res://Arts/CardImages/ShortCircuit.png"
 	}
 	card_database["nimbus_outpost"] = {
-		"name": "Nimbus Outpost",
-		"type": CARD_TYPE_UNIT,
-		"cost": 2,
-		"power": 0,
-		"effect_id": EFFECT_NONE,
-		"target_type": TARGET_NONE,
-		"description": "Gadget. Immobile. Taunt. This can only be played by destroying an ally unit. When played: Gain stats equal to that destroyed unit.",
-		"attack": 2,
-		"hp": 2,
-		"armor": 0,
-		"keywords": ["immobile", "taunt"],
-		"tags": ["basic", "gadget", "sacrifice", "defender"],
-		"traits": ["gadget"],
-		"abilities": [
-			{
-				"trigger": "battlecry",
-				"effect": "destroy_friendly_unit_gain_stats",
-				"target": "friendly_unit"
-			}
-		],
-		"image_path": "res://Arts/CardImages/NimbusOutpost.png"
+	"name": "Nimbus Outpost",
+	"type": CARD_TYPE_UNIT,
+	"cost": 2,
+	"power": 0,
+	"effect_id": "nimbus_outpost",
+	"target_type": TARGET_ANY_FRIENDLY,
+	"description": "Gadget. Immobile. Taunt. Destroy an allied unit to play this. This gains stats equal to that destroyed unit.",
+	"attack": 2,
+	"hp": 2,
+	"armor": 0,
+	"keywords": ["immobile", "taunt"],
+	"tags": ["basic", "gadget", "sacrifice", "defender"],
+	"traits": ["gadget"],
+	"abilities": [],
+	"image_path": "res://Arts/CardImages/NimbusOutpost.png"
 	}
 
 	card_database["autocannon"] = {
@@ -1459,7 +1453,7 @@ func load_card_database() -> void:
 		"power": 0,
 		"effect_id": EFFECT_NONE,
 		"target_type": TARGET_NONE,
-		"description": "Gadget. Mage. Immobile. Turn End: If possible, return a random Mage card in your hand to your deck: Deal 3 damage to all enemy units.",
+		"description": "Gadget. Immobile. Turn End: If possible, return a random Gadget card in your hand to your deck: Deal 3 damage to all enemy units.",
 		"attack": 2,
 		"hp": 5,
 		"armor": 0,
@@ -1470,7 +1464,7 @@ func load_card_database() -> void:
 			{
 				"trigger": "turn_end",
 				"effect": "return_random_hand_trait_card_then_damage_all_enemy_units",
-				"trait": "mage",
+				"trait": "gadget",
 				"amount": 3
 			}
 		],
@@ -1673,27 +1667,28 @@ func load_card_database() -> void:
 	}
 
 	card_database["the_sailor"] = {
-		"name": "The Sailor",
-		"type": CARD_TYPE_UNIT,
-		"cost": 1,
-		"power": 0,
-		"effect_id": EFFECT_NONE,
-		"target_type": TARGET_NONE,
-		"description": "Marine. When destroyed: Draw a card that costs 3 more.",
-		"attack": 2,
-		"hp": 2,
-		"armor": 0,
-		"keywords": [],
-		"tags": ["basic", "marine", "death", "draw"],
-		"traits": ["marine"],
-		"abilities": [
-			{
-				"trigger": "when_destroyed",
-				"effect": "draw_card_that_costs_more",
-				"amount": 3
-			}
-		],
-		"image_path": "res://Arts/CardImages/Sailor.png"
+	"name": "The Sailor",
+	"type": CARD_TYPE_UNIT,
+	"cost": 1,
+	"power": 0,
+	"effect_id": EFFECT_NONE,
+	"target_type": TARGET_NONE,
+	"description": "Marine. When destroyed: Draw a card. It costs 3 more.",
+	"attack": 2,
+	"hp": 2,
+	"armor": 0,
+	"keywords": [],
+	"tags": ["basic", "marine", "death", "draw"],
+	"traits": ["marine"],
+	"abilities": [
+		{
+			"trigger": "when_destroyed",
+			"effect": "draw_card_then_increase_cost",
+			"amount": 1,
+			"cost_increase": 3
+		}
+	],
+	"image_path": "res://Arts/CardImages/Sailor.png"
 	}
 
 	card_database["the_beloved_cannoneer"] = {
@@ -1901,7 +1896,7 @@ func load_card_database() -> void:
 		"power": 0,
 		"effect_id": EFFECT_NONE,
 		"target_type": TARGET_NONE,
-		"description": "Prophet. When played: If you have played 20 or more Prophet cards this game, add The Final Oracle to your hand.",
+		"description": "Prophet. When played: If you have played 10 or more Prophet cards this game, add The Final Oracle to your hand.",
 		"attack": 1,
 		"hp": 1,
 		"armor": 0,
@@ -1914,7 +1909,7 @@ func load_card_database() -> void:
 				"trigger": "battlecry",
 				"effect": "add_card_to_hand_if_trait_played_count",
 				"trait": "prophet",
-				"required_count": 20,
+				"required_count": 10,
 				"card_id": "the_final_oracle",
 				"amount": 1
 			}
@@ -1942,31 +1937,33 @@ func load_card_database() -> void:
 	}
 
 	card_database["the_sleeping_seer"] = {
-		"name": "The Sleeping Seer",
-		"type": CARD_TYPE_UNIT,
-		"cost": 5,
-		"power": 0,
-		"effect_id": EFFECT_NONE,
-		"target_type": TARGET_NONE,
-		"description": "Prophet. Immobile. Turn Start: Remove Immobile and gain +6/+6.",
-		"attack": 3,
-		"hp": 3,
-		"armor": 0,
-		"keywords": ["immobile"],
-		"tags": ["basic", "god", "prophet", "turn_start"],
-		"traits": ["prophet"],
-		"side": CARD_SIDE_GOD,
-		"abilities": [
-			{
-				"trigger": "turn_start",
-				"effect": "remove_keyword_then_buff_self",
-				"keyword": "immobile",
-				"attack": 6,
-				"hp": 6,
-				"once": true
-			}
-		],
-		"image_path": "res://Arts/CardImages/SleepingSeer.png"
+	"name": "The Sleeping Seer",
+	"type": CARD_TYPE_UNIT,
+	"cost": 5,
+	"power": 0,
+	"effect_id": EFFECT_NONE,
+	"target_type": TARGET_NONE,
+	"description": "Prophet. Immobile. Turn Start: Remove Immobile, gain +6/+6, and lose this effect.",
+	"attack": 3,
+	"hp": 3,
+	"armor": 0,
+	"keywords": ["immobile"],
+	"tags": ["basic", "god", "prophet", "turn_start"],
+	"traits": ["prophet"],
+	"side": CARD_SIDE_GOD,
+	"abilities": [
+		{
+			"trigger": "turn_start",
+			"effect": "remove_keyword_then_buff_self",
+			"keyword": "immobile",
+			"attack": 6,
+			"hp": 6,
+			"once": true,
+			"remove_this_ability_after_resolve": true,
+			"refresh_attack_after_immobile_removed": true
+		}
+	],
+	"image_path": "res://Arts/CardImages/SleepingSeer.png"
 	}
 
 	card_database["the_sane_saint"] = {
@@ -2541,58 +2538,33 @@ func make_unit_card(name: String, cost: int, attack: int, hp: int, keywords: Arr
 	return card
 	
 func get_all_card_definitions() -> Array[Dictionary]:
-	return [
-		{
-			"id": "slash",
-			"name": "Slash",
-			"type": "spell",
-			"cost": 1,
-			"power": 2,
-			"description": "Deal 2 damage to any enemy."
-		},
-		{
-			"id": "fireball",
-			"name": "Fireball",
-			"type": "spell",
-			"cost": 2,
-			"power": 4,
-			"description": "Deal 4 damage to any enemy."
-		},
-		{
-			"id": "heal",
-			"name": "Heal",
-			"type": "spell",
-			"cost": 1,
-			"power": 3,
-			"description": "Heal a friendly target by 3."
-		},
-		{
-			"id": "insight",
-			"name": "Insight",
-			"type": "spell",
-			"cost": 1,
-			"power": 2,
-			"description": "Draw 2 cards."
-		},
-		{
-			"id": "soldier",
-			"name": "Soldier",
-			"type": "unit",
-			"cost": 1,
-			"attack": 1,
-			"hp": 2,
-			"description": "A basic 1/2 unit."
-		},
-		{
-			"id": "guardian",
-			"name": "Guardian",
-			"type": "unit",
-			"cost": 2,
-			"attack": 2,
-			"hp": 3,
-			"description": "A sturdy 2/3 unit."
-		}
-	]
+	var definitions: Array[Dictionary] = []
+
+	for card_id in card_database.keys():
+		var data: Dictionary = card_database[card_id]
+
+		var tags: Array = data.get("tags", [])
+		if tags.has("token"):
+			continue
+
+		definitions.append({
+			"id": str(card_id),
+			"name": str(data.get("name", card_id)),
+			"type": str(data.get("type", CARD_TYPE_SPELL)),
+			"cost": int(data.get("cost", 0)),
+			"power": int(data.get("power", 0)),
+			"attack": int(data.get("attack", 0)),
+			"hp": int(data.get("hp", 0)),
+			"armor": int(data.get("armor", 0)),
+			"description": str(data.get("description", "")),
+			"keywords": data.get("keywords", []).duplicate(true),
+			"tags": data.get("tags", []).duplicate(true),
+			"traits": data.get("traits", []).duplicate(true),
+			"side": str(data.get("side", CARD_SIDE_HUMAN)),
+			"image_path": str(data.get("image_path", ""))
+		})
+
+	return definitions
 	
 func get_card_definition(card_id: String) -> Dictionary:
 	for card_def in get_all_card_definitions():

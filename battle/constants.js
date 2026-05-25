@@ -1,7 +1,7 @@
 "use strict";
 
 const STARTING_HP = 20;
-const STARTING_HAND_SIZE = 4;
+const STARTING_HAND_SIZE = 3;
 const MAX_HAND_SIZE = 7;
 const MAX_BOARD_SIZE = 5;
 const MAX_MANA = 10;

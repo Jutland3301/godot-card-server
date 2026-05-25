@@ -6,7 +6,6 @@ const S = require("./state");
 const CardOps = require("./card_ops");
 const Combat = require("./combat");
 const Targets = require("./targets");
-const { makeCardFromId } = require("./card_database");
 
 function lazyTriggers() {
   try {

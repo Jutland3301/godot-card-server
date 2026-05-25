@@ -184,11 +184,7 @@ function cancelTargetSelection(state, seatId) {
   }
 
   if (state.pending_action_type === C.ACTION_SPELL && state.pending_card) {
-    const player = U.getPlayer(state, seatId);
-    if (player) {
-      CardOps.returnCardToHand(player, state.pending_card);
-      addLog(state, `Target selection cancelled. ${U.cardName(state.pending_card)} returned to hand.`);
-    }
+    addLog(state, `Target selection cancelled. ${U.cardName(state.pending_card)} remains in hand.`);
   } else if (state.pending_action_type === C.ACTION_UNIT_ATTACK) {
     addLog(state, "Attack target selection cancelled.");
   } else if (state.pending_action_type === C.ACTION_ABILITY) {
