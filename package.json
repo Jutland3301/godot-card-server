@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node tests/leader_attack_smoke.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

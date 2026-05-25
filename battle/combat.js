@@ -592,27 +592,23 @@ function applySummonState(card, owner = null) {
   if (hasImmobile) {
     card.can_attack = false;
     card.exhausted = true;
-    card.cannot_attack_leader = true;
     return card;
   }
 
   if (hasRush) {
     card.can_attack = true;
     card.exhausted = false;
-    card.cannot_attack_leader = false;
     return card;
   }
 
   if (hasHaste) {
     card.can_attack = true;
     card.exhausted = false;
-    card.cannot_attack_leader = true;
     return card;
   }
 
   card.can_attack = false;
   card.exhausted = true;
-  card.cannot_attack_leader = true;
 
   if (owner && U.refreshAttackPermissionsForPlayer) {
     U.refreshAttackPermissionsForPlayer(owner);
@@ -749,7 +745,7 @@ function canAttack(state, attackerSeat, attacker, targetType = "unit") {
       };
     }
 
-    if (attacker.cannot_attack_leader && !(attacker.summoned_this_turn && hasRush)) {
+    if (attacker.cannot_attack_leader) {
       return {
         ok: false,
         message: "This unit cannot attack leader."
