@@ -133,19 +133,30 @@ function spellCanTargetUnitByAbilityFilter(state, sourceSeat, card, unit) {
     return true;
   }
 
+  const effectId = String(card.effect_id || "");
   const ability = abilities[0];
+
   if (!ability || typeof ability !== "object") {
     return true;
   }
 
   const requiredTrait = U.normalizeLowerString(ability.trait || "");
-  if (requiredTrait && !U.hasTrait(unit, requiredTrait)) {
-    return false;
+
+  if (requiredTrait && effectId !== C.EFFECT_POETRY_OF_RESILIENCE) {
+    if (!U.hasTrait(unit, requiredTrait)) {
+      return false;
+    }
   }
 
   const damagedOnly = Boolean(ability.damaged_only || false);
-  if (damagedOnly && Number(unit.hp || 0) >= Number(unit.max_hp || 0)) {
-    return false;
+
+  if (damagedOnly) {
+    const hp = Number(unit.hp || 0);
+    const maxHp = Number(unit.max_hp || unit.base_hp || hp || 0);
+
+    if (hp >= maxHp) {
+      return false;
+    }
   }
 
   return true;
