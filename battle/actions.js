@@ -543,7 +543,7 @@ function handleBoardSlotClicked(state, seatId, payload, deps = {}) {
       return { ok: true, state };
     }
 
-    return Combat.attackUnit(
+    const attackResult = Combat.attackUnit(
       state,
       attackerSeat,
       attackerIndex,
@@ -551,6 +551,13 @@ function handleBoardSlotClicked(state, seatId, payload, deps = {}) {
       boardIndex,
       deps
     );
+
+    if (attackResult.ok) {
+      clearPendingState(state);
+      S.syncLegacy(state);
+    }
+
+    return attackResult;
   }
 
   if (clickedSeat === seatId) {
@@ -625,13 +632,20 @@ function handlePlayerFaceClicked(state, seatId, payload, deps = {}) {
       return { ok: false, state, message: "Cannot attack own leader." };
     }
 
-    return Combat.attackFace(
+    const attackResult = Combat.attackFace(
       state,
       attackerSeat,
       attackerIndex,
       clickedSeat,
       deps
     );
+
+    if (attackResult.ok) {
+      clearPendingState(state);
+      S.syncLegacy(state);
+    }
+
+    return attackResult;
   }
 
   return { ok: false, state, message: "Select an attacker or pending card first." };
