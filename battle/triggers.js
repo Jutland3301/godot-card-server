@@ -1255,9 +1255,21 @@ function removeKeywordThenBuffSelfFromAbility(state, sourceSeat, sourceCard, abi
   const attackBonus = Number(ability.attack || 0);
   const hpBonus = Number(ability.hp || 0);
 
+  let removedKeyword = false;
+
   if (keywordName) {
+    const beforeKeywords = Array.isArray(sourceCard.keywords) ? sourceCard.keywords.length : 0;
+
     U.removeKeyword(sourceCard, keywordName);
+
+    const afterKeywords = Array.isArray(sourceCard.keywords) ? sourceCard.keywords.length : 0;
+    removedKeyword = afterKeywords < beforeKeywords;
+
     if (sourceCard.temporary_keywords && typeof sourceCard.temporary_keywords === "object") {
+      if (Object.prototype.hasOwnProperty.call(sourceCard.temporary_keywords, keywordName)) {
+        removedKeyword = true;
+      }
+
       delete sourceCard.temporary_keywords[keywordName];
     }
   }
@@ -1267,8 +1279,18 @@ function removeKeywordThenBuffSelfFromAbility(state, sourceSeat, sourceCard, abi
   const owner = U.getPlayer(state, sourceSeat);
   U.refreshAttackPermissionsForPlayer(owner);
 
+  if (removedKeyword && keywordName === C.KEYWORD_IMMOBILE) {
+    sourceCard.exhausted = false;
+    sourceCard.can_attack = true;
+  }
+
   if (once) {
     sourceCard.once_per_turn_flags[flagKey] = true;
+  }
+
+  if (ability.remove_this_ability_after_resolve) {
+    sourceCard.abilities = Array.isArray(sourceCard.abilities) ? sourceCard.abilities : [];
+    sourceCard.abilities = sourceCard.abilities.filter((candidate) => candidate !== ability);
   }
 
   addLog(state, `${U.cardName(sourceCard)} awakened. It lost ${keywordName} and gained +${attackBonus}/+${hpBonus}.`);
