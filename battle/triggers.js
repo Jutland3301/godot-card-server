@@ -640,7 +640,9 @@ function resolveWhenDestroyedAbility(state, destroyedSeat, destroyedCard, abilit
     case C.ABILITY_EFFECT_DRAW_CARD_THAT_COSTS_MORE:
       drawCardThatCostsMoreThanSource(state, destroyedSeat, destroyedCard, ability);
       return;
-
+    case "draw_card_then_increase_cost":
+      drawCardThenIncreaseCost(state, destroyedSeat, destroyedCard, ability);
+      return;
     case C.ABILITY_EFFECT_DRAW: {
       const amount = getAbilityAmount(ability, 1);
       CardOps.drawCards(state, destroyedSeat, amount);
@@ -1460,6 +1462,34 @@ function drawCardThatCostsMoreThanSource(state, ownerSeat, sourceCard, ability) 
 
   owner.hand.push(drawnCard);
   addLog(state, `${U.cardName(sourceCard)} drew ${U.cardName(drawnCard)} that costs ${targetCost}.`);
+}
+
+function drawCardThenIncreaseCost(state, ownerSeat, sourceCard, ability) {
+  const owner = U.getPlayer(state, ownerSeat);
+  if (!owner) return;
+
+  const amount = Number(ability.amount || 1);
+  const costIncrease = Number(ability.cost_increase || 3);
+
+  for (let i = 0; i < amount; i++) {
+    if (!owner.deck || owner.deck.length <= 0) {
+      addLog(state, `${U.cardName(sourceCard)} tried to draw, but deck was empty.`);
+      return;
+    }
+
+    const drawnCard = owner.deck.pop();
+
+    drawnCard.cost = Math.max(0, Number(drawnCard.cost || 0) + costIncrease);
+
+    if (owner.hand.length >= C.MAX_HAND_SIZE) {
+      owner.graveyard.push(drawnCard);
+      addLog(state, `${U.cardName(sourceCard)} drew ${U.cardName(drawnCard)}, but hand was full so it went to graveyard.`);
+      continue;
+    }
+
+    owner.hand.push(drawnCard);
+    addLog(state, `${U.cardName(sourceCard)} drew ${U.cardName(drawnCard)}. It costs ${costIncrease} more.`);
+  }
 }
 
 function addCardToHandFromAbility(state, ownerSeat, sourceCard, ability, ctx = {}) {
