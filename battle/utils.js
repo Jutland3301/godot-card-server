@@ -656,18 +656,17 @@ function canUnitAttackNowWithAura(attackerOwner, attacker, allowFaceAttack) {
     }
 
     /*
-      Godot版の BattleKeywordUtils は allow_face_attack && has_haste で false を返している。
-      ただしカード説明上は Haste がface攻撃可能で、Rushがface不可の意味として使われている。
-      Node側では実戦挙動を優先し、face攻撃禁止は Rushのみで処理する。
+      このゲームの仕様:
+      Rush = 出したターンから顔にも攻撃できる
+      Haste = 出したターンからユニットには攻撃できるが、顔には攻撃できない
     */
-    if (allowFaceAttack && hasRush && !hasHaste) {
+    if (allowFaceAttack && hasHaste && !hasRush) {
       return false;
     }
   }
 
   return true;
 }
-
 function refreshAttackPermissionsForPlayer(player) {
   if (!player) return;
 
