@@ -1148,6 +1148,8 @@ function sendMatchFound(matchId) {
     seat_id: "A",
     side: sideA,
     opponent_side: sideB,
+    display_name: match.seats.A.display_name,
+    opponent_display_name: match.seats.B.display_name,
     state: publicState
   };
 
@@ -1157,6 +1159,8 @@ function sendMatchFound(matchId) {
     seat_id: "B",
     side: sideB,
     opponent_side: sideA,
+    display_name: match.seats.B.display_name,
+    opponent_display_name: match.seats.A.display_name,
     state: publicState
   };
 
