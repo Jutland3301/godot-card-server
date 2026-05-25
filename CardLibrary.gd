@@ -1500,7 +1500,7 @@ func load_card_database() -> void:
 		"hp": 0,
 		"armor": 0,
 		"keywords": [],
-		"tags": ["basic", "spell", "art", "graveyard", "token"],
+		"tags": ["basic", "spell", "art", "graveyard"],
 		"traits": [],
 		"side": CARD_SIDE_GOD,
 		"abilities": [],
