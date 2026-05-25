@@ -13,7 +13,8 @@ const { chooseFirstPlayer } = require("./battle/coin_flip");
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || "";
 
-const STARTING_HP = 20;
+const STARTING_HP = 30;
+const REQUIRED_DECK_SIZE = 30;
 const STARTING_HAND_SIZE = 3;
 const STARTING_MANA = 0;
 const TURN_TIME_LIMIT_SECONDS = 45.0;
@@ -804,8 +805,8 @@ function validateDeckData(deckData) {
 
   const cards = getCardIdsFromDeckData(deckData);
 
-  if (cards.length <= 0) {
-    return "deck_data has no cards.";
+  if (cards.length !== REQUIRED_DECK_SIZE) {
+    return `deck_data must contain exactly ${REQUIRED_DECK_SIZE} cards.`;
   }
 
   return "";
