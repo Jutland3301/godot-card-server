@@ -121,27 +121,39 @@ function getUnit(state, seatId, unitOrIndex) {
 }
 
 function hasKeyword(card, keyword) {
-  return U.hasEffectiveKeyword
-    ? U.hasEffectiveKeyword(card, null, keyword)
-    : U.hasKeyword(card, keyword);
+  if (!card) return false;
+
+  if (U.hasEffectiveKeyword) {
+    const owner = null;
+    return U.hasEffectiveKeyword(card, owner, keyword);
+  }
+
+  if (U.hasKeyword) {
+    return U.hasKeyword(card, keyword);
+  }
+
+  const key = String(keyword || "").toLowerCase();
+  return Array.isArray(card.keywords) && card.keywords.map(String).map(x => x.toLowerCase()).includes(key);
+}
+
+function hasKeywordPlain(card, keyword) {
+  if (!card) return false;
+
+  if (U.hasKeyword) {
+    return U.hasKeyword(card, keyword);
+  }
+
+  const key = String(keyword || "").toLowerCase();
+  return Array.isArray(card.keywords) && card.keywords.map(String).map(x => x.toLowerCase()).includes(key);
 }
 
 function isInvincible(unit) {
   if (!unit) return false;
 
-  if (U.hasKeyword && U.hasKeyword(unit, C.KEYWORD_INVINCIBLE || "invincible")) {
-    return true;
-  }
-
-  if (U.hasKeyword && U.hasKeyword(unit, "invincible")) {
-    return true;
-  }
-
-  if (Array.isArray(unit.keywords)) {
-    return unit.keywords.includes(C.KEYWORD_INVINCIBLE || "invincible") || unit.keywords.includes("invincible");
-  }
-
-  return false;
+  return (
+    hasKeywordPlain(unit, C.KEYWORD_INVINCIBLE || "invincible") ||
+    hasKeywordPlain(unit, "invincible")
+  );
 }
 
 function isDeadUnit(unit) {
@@ -317,6 +329,39 @@ function healPlayer(state, ownerSeat, amount) {
   player.hp = Math.min(maxHp, before + Math.max(0, Number(amount || 0)));
 
   return player.hp - before;
+}
+
+function giveArmor(unit, amount) {
+  if (!unit) {
+    return 0;
+  }
+
+  const gain = Math.max(0, Number(amount || 0));
+  unit.armor = Math.max(0, Number(unit.armor || 0)) + gain;
+  return gain;
+}
+
+function modifyUnitStats(state, ownerSeat, unitOrIndex, attackDelta, hpDelta, ctx = {}) {
+  normalizeStateSoft(state);
+
+  const unit = getUnit(state, ownerSeat, unitOrIndex);
+  if (!unit) {
+    return false;
+  }
+
+  unit.attack = Number(unit.attack || 0) + Number(attackDelta || 0);
+  unit.max_hp = Number(unit.max_hp || 0) + Number(hpDelta || 0);
+  unit.hp = Number(unit.hp || 0) + Number(hpDelta || 0);
+
+  if (unit.max_hp < 0) unit.max_hp = 0;
+
+  if (isDeadUnit(unit)) {
+    queueDeath(state, ownerSeat, unit);
+    processDeathQueue(state, ctx);
+  }
+
+  syncState(state);
+  return true;
 }
 
 function queueDeath(state, ownerSeat, unitOrIndex) {
@@ -504,6 +549,18 @@ function dealDamageToAllUnits(state, amount, ctx = {}) {
   return hitCount;
 }
 
+function hasRushKeyword(card) {
+  return hasKeywordPlain(card, C.KEYWORD_RUSH || "rush") || hasKeywordPlain(card, "rush");
+}
+
+function hasHasteKeyword(card) {
+  return hasKeywordPlain(card, C.KEYWORD_HASTE || "haste") || hasKeywordPlain(card, "haste");
+}
+
+function hasImmobileKeyword(card) {
+  return hasKeywordPlain(card, C.KEYWORD_IMMOBILE || "immobile") || hasKeywordPlain(card, "immobile");
+}
+
 function applySummonState(card, owner = null) {
   if (!card) {
     return card;
@@ -517,32 +574,25 @@ function applySummonState(card, owner = null) {
     card.once_per_turn_flags = {};
   }
 
-  const hasHaste = U.hasKeyword
-    ? U.hasKeyword(card, C.KEYWORD_HASTE || "haste") || U.hasKeyword(card, "haste")
-    : Array.isArray(card.keywords) && card.keywords.includes("haste");
-
-  const hasRush = U.hasKeyword
-    ? U.hasKeyword(card, C.KEYWORD_RUSH || "rush") || U.hasKeyword(card, "rush")
-    : Array.isArray(card.keywords) && card.keywords.includes("rush");
-
-  const hasImmobile = U.hasKeyword
-    ? U.hasKeyword(card, C.KEYWORD_IMMOBILE || "immobile") || U.hasKeyword(card, "immobile")
-    : Array.isArray(card.keywords) && card.keywords.includes("immobile");
+  const hasRush = hasRushKeyword(card);
+  const hasHaste = hasHasteKeyword(card);
+  const hasImmobile = hasImmobileKeyword(card);
 
   if (hasImmobile) {
     card.can_attack = false;
     card.exhausted = true;
+    card.cannot_attack_leader = true;
     return card;
   }
 
-  if (hasHaste) {
+  if (hasRush) {
     card.can_attack = true;
     card.exhausted = false;
     card.cannot_attack_leader = false;
     return card;
   }
 
-  if (hasRush) {
+  if (hasHaste) {
     card.can_attack = true;
     card.exhausted = false;
     card.cannot_attack_leader = true;
@@ -551,6 +601,7 @@ function applySummonState(card, owner = null) {
 
   card.can_attack = false;
   card.exhausted = true;
+  card.cannot_attack_leader = true;
 
   if (owner && U.refreshAttackPermissionsForPlayer) {
     U.refreshAttackPermissionsForPlayer(owner);
@@ -649,7 +700,7 @@ function canAttack(state, attackerSeat, attacker, targetType = "unit") {
     };
   }
 
-  if (hasKeyword(attacker, C.KEYWORD_IMMOBILE || "immobile") || hasKeyword(attacker, "immobile")) {
+  if (hasImmobileKeyword(attacker)) {
     return {
       ok: false,
       message: "This unit is immobile."
@@ -671,22 +722,23 @@ function canAttack(state, attackerSeat, attacker, targetType = "unit") {
   }
 
   if (targetType === "player") {
-    const hasRush = U.hasKeyword
-      ? U.hasKeyword(attacker, C.KEYWORD_RUSH || "rush") || U.hasKeyword(attacker, "rush")
-      : Array.isArray(attacker.keywords) && attacker.keywords.includes("rush");
+    const hasRush = hasRushKeyword(attacker);
+    const hasHaste = hasHasteKeyword(attacker);
 
-    const hasHaste = U.hasKeyword
-      ? U.hasKeyword(attacker, C.KEYWORD_HASTE || "haste") || U.hasKeyword(attacker, "haste")
-      : Array.isArray(attacker.keywords) && attacker.keywords.includes("haste");
-
-    if (hasRush && attacker.summoned_this_turn && !hasHaste) {
+    /*
+      このゲームの仕様:
+      Rush  = 召喚ターンからユニットにもleaderにも攻撃できる
+      Haste = 召喚ターンからユニットには攻撃できるが、leaderには攻撃できない
+      両方ある場合はRush優先でleader攻撃可能
+    */
+    if (attacker.summoned_this_turn && hasHaste && !hasRush) {
       return {
         ok: false,
-        message: "Rush units cannot attack leader on the turn they are summoned."
+        message: "Haste units cannot attack leader on the turn they are summoned."
       };
     }
 
-    if (attacker.cannot_attack_leader && !(hasRush && !attacker.summoned_this_turn)) {
+    if (attacker.cannot_attack_leader && !(attacker.summoned_this_turn && hasRush)) {
       return {
         ok: false,
         message: "This unit cannot attack leader."
@@ -725,8 +777,8 @@ function hasTauntBlocking(defenderPlayer, targetUnit = null) {
   const taunts = defenderPlayer.board.filter((unit) => {
     return unit && (
       (U.isTauntUnit && U.isTauntUnit(defenderPlayer, defenderPlayer.board.indexOf(unit))) ||
-      (U.hasKeyword && (U.hasKeyword(unit, C.KEYWORD_TAUNT || "taunt") || U.hasKeyword(unit, "taunt"))) ||
-      (Array.isArray(unit.keywords) && unit.keywords.includes("taunt"))
+      hasKeywordPlain(unit, C.KEYWORD_TAUNT || "taunt") ||
+      hasKeywordPlain(unit, "taunt")
     );
   });
 
@@ -867,13 +919,8 @@ function attackUnit(state, attackerSeat, attackerIndex, defenderSeat, defenderIn
   const attackerDamage = Math.max(0, Number(attacker.attack || 0));
   const defenderDamage = Math.max(0, Number(defender.attack || 0));
 
-  const attackerDeadly =
-    (U.hasKeyword && (U.hasKeyword(attacker, C.KEYWORD_DEADLY || "deadly") || U.hasKeyword(attacker, "deadly"))) ||
-    (Array.isArray(attacker.keywords) && attacker.keywords.includes("deadly"));
-
-  const defenderDeadly =
-    (U.hasKeyword && (U.hasKeyword(defender, C.KEYWORD_DEADLY || "deadly") || U.hasKeyword(defender, "deadly"))) ||
-    (Array.isArray(defender.keywords) && defender.keywords.includes("deadly"));
+  const attackerDeadly = hasKeywordPlain(attacker, C.KEYWORD_DEADLY || "deadly") || hasKeywordPlain(attacker, "deadly");
+  const defenderDeadly = hasKeywordPlain(defender, C.KEYWORD_DEADLY || "deadly") || hasKeywordPlain(defender, "deadly");
 
   if (attackerDeadly && attackerDamage > 0) {
     defender.hp = 0;
@@ -889,9 +936,7 @@ function attackUnit(state, attackerSeat, attackerIndex, defenderSeat, defenderIn
     damageUnit(state, attackerSeat, attacker, defenderDamage, ctx);
   }
 
-  const attackerRicochet =
-    (U.hasKeyword && (U.hasKeyword(attacker, C.KEYWORD_RICOCHET || "ricochet") || U.hasKeyword(attacker, "ricochet"))) ||
-    (Array.isArray(attacker.keywords) && attacker.keywords.includes("ricochet"));
+  const attackerRicochet = hasKeywordPlain(attacker, C.KEYWORD_RICOCHET || "ricochet") || hasKeywordPlain(attacker, "ricochet");
 
   if (attackerRicochet && attackerDamage > 0) {
     damagePlayer(state, defenderSeat, attackerDamage);
@@ -977,6 +1022,8 @@ module.exports = {
   damageUnit,
   healPlayer,
   healUnit,
+  giveArmor,
+  modifyUnitStats,
 
   destroyUnit,
   queueDeath,
