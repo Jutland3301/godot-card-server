@@ -535,9 +535,17 @@ function applySummonState(card, owner = null) {
     return card;
   }
 
-  if (hasHaste || hasRush) {
+  if (hasHaste) {
     card.can_attack = true;
     card.exhausted = false;
+    card.cannot_attack_leader = false;
+    return card;
+  }
+
+  if (hasRush) {
+    card.can_attack = true;
+    card.exhausted = false;
+    card.cannot_attack_leader = true;
     return card;
   }
 
@@ -663,13 +671,6 @@ function canAttack(state, attackerSeat, attacker, targetType = "unit") {
   }
 
   if (targetType === "player") {
-    if (attacker.cannot_attack_leader) {
-      return {
-        ok: false,
-        message: "This unit cannot attack leader."
-      };
-    }
-
     const hasRush = U.hasKeyword
       ? U.hasKeyword(attacker, C.KEYWORD_RUSH || "rush") || U.hasKeyword(attacker, "rush")
       : Array.isArray(attacker.keywords) && attacker.keywords.includes("rush");
@@ -682,6 +683,13 @@ function canAttack(state, attackerSeat, attacker, targetType = "unit") {
       return {
         ok: false,
         message: "Rush units cannot attack leader on the turn they are summoned."
+      };
+    }
+
+    if (attacker.cannot_attack_leader && !(hasRush && !attacker.summoned_this_turn)) {
+      return {
+        ok: false,
+        message: "This unit cannot attack leader."
       };
     }
   }
