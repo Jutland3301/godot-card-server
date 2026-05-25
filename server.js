@@ -129,6 +129,28 @@ async function dbQuery(text, params = []) {
   return await pool.query(text, params);
 }
 
+let deckSchemaReady = false;
+
+async function ensureDeckSchema() {
+  if (deckSchemaReady) {
+    return;
+  }
+
+  await dbQuery("ALTER TABLE decks ADD COLUMN IF NOT EXISTS slot_index INTEGER NOT NULL DEFAULT 0");
+  await dbQuery(`
+    WITH ranked AS (
+      SELECT id, ROW_NUMBER() OVER (PARTITION BY user_id, side ORDER BY created_at ASC, id ASC) AS new_slot
+      FROM decks
+      WHERE slot_index <= 0
+    )
+    UPDATE decks
+    SET slot_index = ranked.new_slot
+    FROM ranked
+    WHERE decks.id = ranked.id
+  `);
+  deckSchemaReady = true;
+}
+
 function makeUserToken(userId) {
   return `user:${userId}`;
 }
@@ -427,12 +449,14 @@ async function handleGetDecks(req, res) {
     return;
   }
 
+  await ensureDeckSchema();
+
   const decksResult = await dbQuery(
     `
-    SELECT id, name, side, created_at, updated_at
+    SELECT id, name, side, slot_index, created_at, updated_at
     FROM decks
     WHERE user_id = $1
-    ORDER BY updated_at DESC, id DESC
+    ORDER BY side ASC, slot_index ASC, id ASC
     `,
     [user.id]
   );
@@ -465,6 +489,7 @@ async function handleGetDecks(req, res) {
       deck_id: deck.id,
       name: deck.name,
       side: deck.side,
+      slot_index: Number(deck.slot_index || 0),
       cards: cardIds,
       card_ids: cardIds,
       card_counts: cardsResult.rows,
@@ -483,6 +508,8 @@ async function handleSaveDeck(req, res) {
     return;
   }
 
+  await ensureDeckSchema();
+
   const body = await readJsonBody(req);
 
   if (body === null) {
@@ -493,6 +520,7 @@ async function handleSaveDeck(req, res) {
   const deckId = Number(body.deck_id || body.id || 0);
   const name = String(body.name || body.deck_name || "New Deck").trim();
   const side = normalizeSide(body.side);
+  let slotIndex = Number(body.slot_index || 0);
   const cardSource = Array.isArray(body.cards)
     ? body.cards
     : Array.isArray(body.card_ids)
@@ -506,11 +534,6 @@ async function handleSaveDeck(req, res) {
     return;
   }
 
-  if (cardIds.length <= 0) {
-    sendJson(res, 400, { ok: false, error: "Deck has no cards." });
-    return;
-  }
-
   const cardCounts = countCards(cardIds);
   const client = await pool.connect();
 
@@ -519,15 +542,23 @@ async function handleSaveDeck(req, res) {
 
     let finalDeckId = deckId;
 
+    if (slotIndex <= 0) {
+      const slotResult = await client.query(
+        "SELECT COALESCE(MAX(slot_index), 0) + 1 AS next_slot FROM decks WHERE user_id = $1 AND side = $2",
+        [user.id, side]
+      );
+      slotIndex = Number(slotResult.rows[0].next_slot || 1);
+    }
+
     if (finalDeckId > 0) {
       const updateResult = await client.query(
         `
         UPDATE decks
-        SET name = $1, side = $2, updated_at = NOW()
-        WHERE id = $3 AND user_id = $4
+        SET name = $1, side = $2, slot_index = $3, updated_at = NOW()
+        WHERE id = $4 AND user_id = $5
         RETURNING id
         `,
-        [name, side, finalDeckId, user.id]
+        [name, side, slotIndex, finalDeckId, user.id]
       );
 
       if (updateResult.rows.length <= 0) {
@@ -538,11 +569,11 @@ async function handleSaveDeck(req, res) {
     if (finalDeckId <= 0) {
       const insertResult = await client.query(
         `
-        INSERT INTO decks (user_id, name, side)
-        VALUES ($1, $2, $3)
+        INSERT INTO decks (user_id, name, side, slot_index)
+        VALUES ($1, $2, $3, $4)
         RETURNING id
         `,
-        [user.id, name, side]
+        [user.id, name, side, slotIndex]
       );
 
       finalDeckId = insertResult.rows[0].id;
@@ -569,6 +600,7 @@ async function handleSaveDeck(req, res) {
         deck_id: finalDeckId,
         name,
         side,
+        slot_index: slotIndex,
         cards: cardIds,
         card_ids: cardIds
       }
@@ -579,6 +611,37 @@ async function handleSaveDeck(req, res) {
   } finally {
     client.release();
   }
+}
+
+async function handleDeleteDeck(req, res) {
+  const user = await requireUser(req, res);
+  if (!user) {
+    return;
+  }
+
+  await ensureDeckSchema();
+  const body = await readJsonBody(req);
+  if (body === null) {
+    sendJson(res, 400, { ok: false, error: "Invalid JSON" });
+    return;
+  }
+
+  const deckId = Number(body.deck_id || body.id || 0);
+  if (deckId <= 0) {
+    sendJson(res, 400, { ok: false, error: "deck_id is required." });
+    return;
+  }
+
+  const result = await dbQuery(
+    "DELETE FROM decks WHERE id = $1 AND user_id = $2 RETURNING id",
+    [deckId, user.id]
+  );
+  if (result.rows.length <= 0) {
+    sendJson(res, 404, { ok: false, error: "Deck not found." });
+    return;
+  }
+
+  sendJson(res, 200, { ok: true, deck_id: deckId });
 }
 
 async function handleRankedProfile(req, res) {
@@ -778,6 +841,11 @@ async function handleHttp(req, res) {
 
     if (req.method === "POST" && path === "/save_deck") {
       await handleSaveDeck(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && path === "/delete_deck") {
+      await handleDeleteDeck(req, res);
       return;
     }
 
