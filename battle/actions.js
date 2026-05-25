@@ -235,7 +235,6 @@ function validateCanPlayCard(state, seatId, player, card, options = {}) {
       return { ok: false, message: "Board is full." };
     }
   }
-
   if (U.isSpell(card)) {
     if (!Targets.hasValidPlayTargetForCard(state, seatId, card)) {
       return { ok: false, message: "No valid target for this card." };
@@ -333,8 +332,12 @@ function playUnitCard(state, seatId, playedCard, target = null, deps = {}) {
       return { ok: false, state, message: "Nimbus Outpost needs an allied unit target." };
     }
 
-    const targetSeat = U.normalizeOwnerToSeat(state, target.owner_seat ?? target.owner ?? target.owner_id ?? seatId);
-    const targetIndex = Number(target.board_index ?? target.index ?? -1);
+    const targetSeat = U.normalizeOwnerToSeat(
+      state,
+      target.owner_seat ?? target.owner ?? target.owner_id ?? target.ownerId ?? seatId
+    );
+
+    const targetIndex = Number(target.board_index ?? target.boardIndex ?? target.index ?? -1);
 
     if (targetSeat !== seatId) {
       return { ok: false, state, message: "Nimbus Outpost must destroy your own unit." };
@@ -345,24 +348,26 @@ function playUnitCard(state, seatId, playedCard, target = null, deps = {}) {
     }
 
     const sacrificed = player.board[targetIndex];
-    if (!sacrificed) {
+    if (!sacrificed || sacrificed === playedCard) {
       return { ok: false, state, message: "Nimbus Outpost target not found." };
     }
 
-    player.board.splice(targetIndex, 1);
+    const gainedAttack = Number(sacrificed.attack || 0);
+    const gainedHp = Number(sacrificed.max_hp || sacrificed.hp || 0);
 
-    playedCard.attack = Number(playedCard.attack || 0) + Number(sacrificed.attack || 0);
-    playedCard.hp = Number(playedCard.hp || 0) + Number(sacrificed.hp || 0);
-    playedCard.max_hp = Number(playedCard.max_hp || playedCard.hp || 0) + Number(sacrificed.hp || 0);
+    player.board.splice(targetIndex, 1);
+    CardOps.moveCardToGraveyard(player, sacrificed);
+
+    playedCard.attack = Number(playedCard.attack || 0) + gainedAttack;
+    playedCard.max_hp = Number(playedCard.max_hp || playedCard.hp || 0) + gainedHp;
+    playedCard.hp = Number(playedCard.hp || 0) + gainedHp;
     playedCard.base_attack = Number(playedCard.attack || 0);
     playedCard.base_hp = Number(playedCard.max_hp || playedCard.hp || 0);
 
     Combat.applySummonState(playedCard, player);
     player.board.push(playedCard);
 
-    CardOps.moveCardToGraveyard(player, sacrificed);
     CardOps.incrementPlayedTraitCounts(player, playedCard);
-
     Triggers.resolveOnUnitPlayed(state, seatId, playedCard, deps);
 
     Combat.processDeathQueue(state, deps);
