@@ -264,6 +264,29 @@ function resolveBattlecryAbility(state, sourceSeat, sourceCard, ability, context
       resolveAllKnowingArchivistBattlecry(state, sourceSeat, sourceCard);
       return;
 
+    case C.EFFECT_TARNISHED_BOOKSHELF: {
+      const Effects = lazyEffects();
+      const owner = U.getPlayer(state, sourceSeat);
+      if (!Effects || !owner) return;
+
+      const candidateIndexes = [];
+      for (let i = 0; i < owner.hand.length; i++) {
+        if (U.hasTrait(owner.hand[i], "scholar")) {
+          candidateIndexes.push(i);
+        }
+      }
+
+      Effects.beginHandSelection(
+        state,
+        sourceSeat,
+        C.EFFECT_TARNISHED_BOOKSHELF,
+        sourceCard,
+        candidateIndexes,
+        "Choose a Scholar card to copy into your deck."
+      );
+      return;
+    }
+
     default:
       addLog(state, `Unsupported battlecry effect: ${effect}.`);
   }

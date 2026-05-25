@@ -284,9 +284,10 @@ function playCardFromHand(state, seatId, handIndex, target = null, deps = {}, op
     return { ok: false, state, message: playCheck.message };
   }
 
+  const targetType = String(card.target_type || C.TARGET_NONE).toLowerCase();
   const needsTarget =
-    String(card.target_type || C.TARGET_NONE) !== C.TARGET_NONE &&
-    String(card.target_type || "") !== "";
+    targetType !== String(C.TARGET_NONE).toLowerCase() &&
+    targetType !== "";
 
   if (needsTarget) {
     const targetCheck = Targets.isValidTargetForCard(state, seatId, card, target);
@@ -522,9 +523,10 @@ function handleHandCardClicked(state, seatId, payload, deps = {}) {
     return { ok: false, state, message: playCheck.message };
   }
 
+  const targetType = String(card.target_type || C.TARGET_NONE).toLowerCase();
   const needsTarget =
-    String(card.target_type || C.TARGET_NONE) !== C.TARGET_NONE &&
-    String(card.target_type || "") !== "";
+    targetType !== String(C.TARGET_NONE).toLowerCase() &&
+    targetType !== "";
 
   if (needsTarget) {
     setPendingCardTarget(state, seatId, handIndex, card);

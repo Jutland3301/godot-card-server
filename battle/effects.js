@@ -105,12 +105,15 @@ function finishPendingSpellAfterHandSelection(state, sourceSeat, sourceCard, ctx
   const player = U.getPlayer(state, sourceSeat);
   if (!player || !sourceCard) return;
 
-  const Triggers = lazyTriggers();
-  if (Triggers && typeof Triggers.resolveOnSpellPlayed === "function") {
-    Triggers.resolveOnSpellPlayed(state, sourceSeat, sourceCard, ctx);
+  if (U.isSpell(sourceCard)) {
+    const Triggers = lazyTriggers();
+    if (Triggers && typeof Triggers.resolveOnSpellPlayed === "function") {
+      Triggers.resolveOnSpellPlayed(state, sourceSeat, sourceCard, ctx);
+    }
+
+    CardOps.moveCardToGraveyard(player, sourceCard);
   }
 
-  CardOps.moveCardToGraveyard(player, sourceCard);
   clearHandSelection(state);
   Combat.processDeathQueue(state, ctx);
   S.syncLegacy(state);
@@ -235,6 +238,13 @@ function applyEffectToTarget(state, sourceSeat, sourceCard, target, ability = {}
       }
 
       return { ok: false, pending: false, message: "Invalid heal target." };
+    }
+
+    case C.EFFECT_DRAW: {
+      const amount = getAmount(sourceCard, ability, 0);
+      CardOps.drawCards(state, sourceSeat, amount);
+      addLog(state, `${U.cardName(sourceCard)} drew ${amount} card(s).`);
+      return { ok: true, pending: false };
     }
 
     case C.EFFECT_DESTROY_UNIT: {
