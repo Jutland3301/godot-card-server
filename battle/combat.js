@@ -3,6 +3,7 @@
 const C = require("./constants");
 const U = require("./utils");
 const S = require("./state");
+const CardOps = require("./card_ops");
 
 function lazyTriggers() {
   try {
@@ -476,6 +477,13 @@ function processDeathQueue(state, ctx = {}) {
 
         const removed = player.board.splice(i, 1)[0];
         player.graveyard.push(removed);
+        if (U.hasTrait(removed, "animal")) {
+          player.animal_deaths_this_game = Number(player.animal_deaths_this_game || 0) + 1;
+        }
+        if (U.hasTrait(removed, "phantom")) {
+          if (!Array.isArray(player.phantom_death_history)) player.phantom_death_history = [];
+          player.phantom_death_history.push(U.copyCardData(removed));
+        }
 
         destroyed.push({
           owner_seat: seat,
@@ -486,6 +494,9 @@ function processDeathQueue(state, ctx = {}) {
 
         if (Triggers && typeof Triggers.resolveWhenDestroyedAbilities === "function") {
           Triggers.resolveWhenDestroyedAbilities(state, seat, removed, ctx);
+        }
+        if (Triggers && typeof Triggers.resolveOnAllyUnitDestroyedTriggers === "function") {
+          Triggers.resolveOnAllyUnitDestroyedTriggers(state, seat, removed, ctx);
         }
       }
     }
@@ -854,6 +865,7 @@ function attackFace(state, attackerSeat, attackerIndex, defenderSeat, ctx = {}) 
   addLog(state, `${U.cardName(attacker)} attacked enemy leader for ${damage}.`);
 
   processDeathQueue(state, ctx);
+  returnSurvivingDuelist(attackerOwner, attacker);
   markGameOverIfNeeded(state);
   syncState(state);
 
@@ -969,6 +981,7 @@ function attackUnit(state, attackerSeat, attackerIndex, defenderSeat, defenderIn
   }
 
   addLog(state, `${U.cardName(attacker)} attacked ${U.cardName(defender)}.`);
+  returnSurvivingDuelist(attackerOwner, attacker);
 
   markGameOverIfNeeded(state);
   syncState(state);
@@ -1024,6 +1037,15 @@ function hasAnyValidAttackTargetForUnit(state, attackerSeat, attacker) {
   }
 
   return canUnitAttackEnemyPlayerForUI(state, attackerSeat, attacker);
+}
+
+function returnSurvivingDuelist(owner, attacker) {
+  if (!owner || !attacker || U.cardId(attacker) !== "the_unfinished_duelist") return;
+  const index = owner.board.indexOf(attacker);
+  if (index < 0) return;
+  owner.board.splice(index, 1);
+  CardOps.returnCardToHand(owner, attacker);
+  U.refreshAttackPermissionsForPlayer(owner);
 }
 
 module.exports = {

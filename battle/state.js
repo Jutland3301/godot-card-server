@@ -159,6 +159,8 @@ function normalizePlayer(player, fallbackOwnerId = "") {
   }
 
   player.played_trait_counts = normalizeObject(player.played_trait_counts);
+  player.animal_deaths_this_game = asNumber(player.animal_deaths_this_game, 0);
+  player.phantom_death_history = normalizeCardArray(player.phantom_death_history);
 
   if (player.scholar_cards_played_this_game > 0 && !player.played_trait_counts.scholar) {
     player.played_trait_counts.scholar = player.scholar_cards_played_this_game;
@@ -517,6 +519,8 @@ function serializePlayer(player) {
     scholar_cards_played_this_game: normalized.scholar_cards_played_this_game,
     scholar_played_count: normalized.scholar_played_count,
     played_trait_counts: U.deepClone(normalized.played_trait_counts),
+    animal_deaths_this_game: normalized.animal_deaths_this_game,
+    phantom_death_history: serializeCardArray(normalized.phantom_death_history),
     last_spell_cast: normalized.last_spell_cast ? serializeCard(normalized.last_spell_cast) : null
   };
 }

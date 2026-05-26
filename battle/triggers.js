@@ -287,6 +287,90 @@ function resolveBattlecryAbility(state, sourceSeat, sourceCard, ability, context
       return;
     }
 
+    case "draw_then_bottom_random_hand": {
+      const owner = U.getPlayer(state, sourceSeat);
+      CardOps.drawCards(state, sourceSeat, 1);
+      if (owner && owner.hand.length > 0) {
+        const chosen = owner.hand.splice(U.randomInt(owner.hand.length), 1)[0];
+        owner.deck.unshift(chosen);
+      }
+      return;
+    }
+
+    case "destroy_highest_attack_enemy_unit": {
+      const enemySeat = U.otherSeat(sourceSeat);
+      const enemy = U.getPlayer(state, enemySeat);
+      if (!enemy || enemy.board.length <= 0) return;
+      let selected = enemy.board[0];
+      for (const unit of enemy.board) {
+        if (Number(unit.attack || 0) > Number(selected.attack || 0)) selected = unit;
+      }
+      Combat.destroyUnit(state, enemySeat, selected, ctx);
+      return;
+    }
+
+    case "shuffle_graveyard_trait_into_deck_discount": {
+      const owner = U.getPlayer(state, sourceSeat);
+      if (!owner) return;
+      const trait = U.normalizeLowerString(ability.trait || "animal");
+      const reduction = Number(ability.cost_reduction || 2);
+      const returned = owner.graveyard.filter(card => U.hasTrait(card, trait));
+      owner.graveyard = owner.graveyard.filter(card => !U.hasTrait(card, trait));
+      for (const card of returned) {
+        card.cost = Math.max(0, Number(card.cost || 0) - reduction);
+        owner.deck.push(card);
+      }
+      CardOps.shuffleArray(owner.deck);
+      return;
+    }
+
+    case "buff_random_other_friendly_trait_unit": {
+      const owner = U.getPlayer(state, sourceSeat);
+      const trait = U.normalizeLowerString(ability.trait || "");
+      if (!owner) return;
+      const candidates = owner.board.filter(card => card !== sourceCard && U.hasTrait(card, trait));
+      if (candidates.length > 0) {
+        U.buffCardStats(candidates[U.randomInt(candidates.length)], Number(ability.attack || 0), Number(ability.hp || 0));
+      }
+      return;
+    }
+
+    case "buff_self_if_hand_size_at_least": {
+      const owner = U.getPlayer(state, sourceSeat);
+      if (owner && owner.hand.length >= Number(ability.required_count || 5)) {
+        U.buffCardStats(sourceCard, Number(ability.attack || 0), Number(ability.hp || 0));
+      }
+      return;
+    }
+
+    case "draw_if_graveyard_has_trait": {
+      const owner = U.getPlayer(state, sourceSeat);
+      const trait = U.normalizeLowerString(ability.trait || "");
+      if (owner && owner.graveyard.some(card => U.hasTrait(card, trait))) {
+        CardOps.drawCards(state, sourceSeat, Number(ability.amount || 1));
+      }
+      return;
+    }
+
+    case "copy_last_destroyed_trait_to_hand": {
+      const owner = U.getPlayer(state, sourceSeat);
+      if (!owner || !Array.isArray(owner.phantom_death_history) || owner.phantom_death_history.length <= 0) return;
+      const copied = U.copyCardData(owner.phantom_death_history[owner.phantom_death_history.length - 1]);
+      copied.cost = Number(copied.cost || 0) + Number(ability.cost_increase || 1);
+      CardOps.returnCardToHand(owner, copied);
+      return;
+    }
+
+    case "resurrect_trait_then_destroy_non_trait": {
+      resurrectTraitUnits(state, sourceSeat, U.normalizeLowerString(ability.trait || "phantom"), Number(ability.amount || 3), false, false);
+      const owner = U.getPlayer(state, sourceSeat);
+      if (!owner) return;
+      for (const unit of owner.board.slice()) {
+        if (!U.hasTrait(unit, "phantom")) Combat.destroyUnit(state, sourceSeat, unit, ctx);
+      }
+      return;
+    }
+
     default:
       addLog(state, `Unsupported battlecry effect: ${effect}.`);
   }
@@ -422,6 +506,14 @@ function resolveTurnEndAbility(state, sourceSeat, sourceCard, ability, ctx = {})
 
     case C.ABILITY_EFFECT_BUFF_SELF:
       buffSelfFromAbility(state, sourceSeat, sourceCard, ability, ctx);
+      return;
+
+    case "heal_leader":
+      Combat.healPlayer(state, sourceSeat, Number(ability.amount || 2));
+      return;
+
+    case "destroy_self":
+      Combat.destroyUnit(state, sourceSeat, sourceCard, ctx);
       return;
 
     default:
@@ -677,6 +769,46 @@ function resolveWhenDestroyedAbility(state, destroyedSeat, destroyedCard, abilit
       addCardToHandFromAbility(state, destroyedSeat, destroyedCard, ability, ctx);
       return;
 
+    case "draw_then_summon_if_unit": {
+      const owner = U.getPlayer(state, destroyedSeat);
+      const before = owner.hand.length;
+      CardOps.drawCards(state, destroyedSeat, 1);
+      if (owner.hand.length > before && U.isUnit(owner.hand[owner.hand.length - 1])) {
+        Combat.summonCard(state, destroyedSeat, String(ability.card_id || "hound_head"), 1, ctx);
+      }
+      return;
+    }
+
+    case "shuffle_buffed_copy_to_deck": {
+      const copied = U.copyCardData(destroyedCard);
+      copied.hp = copied.max_hp;
+      U.buffCardStats(copied, Number(ability.attack || 2), Number(ability.hp || 2));
+      owner.deck.push(copied);
+      CardOps.shuffleArray(owner.deck);
+      return;
+    }
+
+    case "add_card_to_graveyard": {
+      if (typeof ctx.makeCardFromId !== "function") return;
+      const token = ctx.makeCardFromId(String(ability.card_id || ""));
+      if (token) owner.graveyard.push(token);
+      return;
+    }
+
+    case "resurrect_lowest_cost_trait_unit": {
+      if (owner.board.length >= C.MAX_BOARD_SIZE) return;
+      const trait = U.normalizeLowerString(ability.trait || "phantom");
+      const eligible = owner.graveyard.filter(card => card !== destroyedCard && U.isUnit(card) && U.hasTrait(card, trait));
+      if (eligible.length <= 0) return;
+      eligible.sort((a, b) => Number(a.cost || 0) - Number(b.cost || 0));
+      const chosen = eligible[0];
+      owner.graveyard.splice(owner.graveyard.indexOf(chosen), 1);
+      chosen.hp = chosen.max_hp;
+      Combat.applySummonState(chosen, owner);
+      owner.board.push(chosen);
+      return;
+    }
+
     default:
       addLog(state, `Unsupported when_destroyed effect: ${effect}.`);
   }
@@ -760,6 +892,7 @@ function resolveOnAllyUnitAttackTriggers(state, attackerSeat, attacker, ctx = {}
 function resolveOnAllyUnitAttackAbility(state, sourceSeat, sourceCard, attacker, ability, ctx = {}) {
   const effect = getAbilityEffect(ability);
   const amount = getAbilityAmount(ability, 0);
+  if (ability.only_self && sourceCard !== attacker) return;
 
   switch (effect) {
     case C.ABILITY_EFFECT_DAMAGE_ENEMY_LEADER_ON_ALLY_ATTACK: {
@@ -776,6 +909,22 @@ function resolveOnAllyUnitAttackAbility(state, sourceSeat, sourceCard, attacker,
       addLog(state, `${U.cardName(sourceCard)} gave ${U.cardName(attacker)} +${attackBonus}/+${hpBonus} before the attack.`);
       return;
     }
+
+    case "draw_then_discount_trait": {
+      const owner = U.getPlayer(state, sourceSeat);
+      const before = owner.hand.length;
+      CardOps.drawCards(state, sourceSeat, 1);
+      if (owner.hand.length > before) {
+        const drawn = owner.hand[owner.hand.length - 1];
+        if (U.hasTrait(drawn, U.normalizeLowerString(ability.trait || "animal"))) {
+          drawn.cost = Math.max(0, Number(drawn.cost || 0) - Number(ability.cost_reduction || 1));
+        }
+      }
+      return;
+    }
+
+    case "return_self_to_hand_after_attack":
+      return;
 
     default:
       addLog(state, `Unsupported on_ally_unit_attack effect: ${effect}.`);
@@ -1552,6 +1701,41 @@ function debuffAttackerFromWhenAttacked(state, defenderSeat, defender, attackerS
   U.refreshAttackPermissionsForPlayer(attackerOwner);
 }
 
+function resurrectTraitUnits(state, sourceSeat, trait, amount, temporary, grantHaste) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner) return 0;
+  let count = 0;
+  for (let i = owner.graveyard.length - 1; i >= 0 && count < amount && owner.board.length < C.MAX_BOARD_SIZE; i--) {
+    const card = owner.graveyard[i];
+    if (!card || !U.isUnit(card) || !U.hasTrait(card, trait)) continue;
+    owner.graveyard.splice(i, 1);
+    card.hp = card.max_hp;
+    if (grantHaste && !U.hasKeyword(card, C.KEYWORD_HASTE)) U.addKeyword(card, C.KEYWORD_HASTE);
+    if (temporary) {
+      if (!Array.isArray(card.abilities)) card.abilities = [];
+      card.abilities.push({ trigger: C.TRIGGER_TURN_END, effect: "destroy_self" });
+    }
+    Combat.applySummonState(card, owner);
+    owner.board.push(card);
+    count++;
+  }
+  U.refreshAttackPermissionsForPlayer(owner);
+  return count;
+}
+
+function resolveOnAllyUnitDestroyedTriggers(state, ownerSeat, destroyedCard, _ctx = {}) {
+  const owner = U.getPlayer(state, ownerSeat);
+  if (!owner || !destroyedCard) return;
+  for (const sourceCard of owner.board.slice()) {
+    if (!sourceCard || !owner.board.includes(sourceCard)) continue;
+    for (const ability of U.getAbilities(sourceCard, "on_ally_unit_destroyed")) {
+      if (getAbilityEffect(ability) === "buff_self_if_destroyed_trait" && U.hasTrait(destroyedCard, U.normalizeLowerString(ability.trait || ""))) {
+        U.buffCardStats(sourceCard, Number(ability.attack || 0), Number(ability.hp || 0));
+      }
+    }
+  }
+}
+
 function destroyLowestHealthEnemyUnitAtTurnStart(state, sourceSeat, sourceCard, ability, ctx = {}) {
   const enemySeat = U.otherSeat(sourceSeat);
   const enemy = U.getPlayer(state, enemySeat);
@@ -1705,6 +1889,7 @@ module.exports = {
 
   resolveOnAllyUnitAttackTriggers,
   resolveOnAllyUnitAttackAbility,
+  resolveOnAllyUnitDestroyedTriggers,
 
   resolveOnAllyUnitDamagedTriggers,
   resolveOnAllyUnitDamagedAbility,

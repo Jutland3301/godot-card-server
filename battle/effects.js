@@ -460,6 +460,26 @@ function resolveSpellOrCardEffect(state, sourceSeat, sourceCard, target = null, 
       resolveMasterworkOfArt(state, sourceSeat, sourceCard, ctx);
       return { ok: true, pending: false };
 
+    case "divine_menagerie":
+      resolveDivineMenagerie(state, sourceSeat, sourceCard);
+      return { ok: true, pending: false };
+
+    case "call_of_the_wild_gods":
+      resolveCallOfTheWildGods(state, sourceSeat, sourceCard, ctx);
+      return { ok: true, pending: false };
+
+    case "cemetery_lantern":
+      resolveCemeteryLantern(state, sourceSeat, sourceCard);
+      return { ok: true, pending: false };
+
+    case "mausoleum_pact":
+      resolveMausoleumPact(state, sourceSeat, sourceCard);
+      return { ok: true, pending: false };
+
+    case "the_last_haunting":
+      resolveTheLastHaunting(state, sourceSeat, sourceCard);
+      return { ok: true, pending: false };
+
     case C.EFFECT_INCANTATION_OF_MINSTREL:
       return resolveIncantationOfMinstrel(state, sourceSeat, sourceCard);
 
@@ -1485,6 +1505,92 @@ function resolveDuelOnSeaSelectedCard(state, sourceSeat, sourceCard, selectedCar
   addLog(state, `${U.cardName(sourceCard)} revealed ${U.cardName(selectedCard)} with ${threshold} ATK. Destroyed ${destroyed} enemy unit(s).`);
 }
 
+function resolveDivineMenagerie(state, sourceSeat, sourceCard) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner) return;
+  let count = 0;
+  while (count < 2) {
+    const candidates = owner.deck.filter(card => U.hasTrait(card, "animal"));
+    if (candidates.length <= 0) break;
+    const drawn = candidates[U.randomInt(candidates.length)];
+    owner.deck.splice(owner.deck.indexOf(drawn), 1);
+    if (U.isUnit(drawn)) U.buffCardStats(drawn, 1, 1);
+    if (owner.hand.length >= C.MAX_HAND_SIZE) owner.graveyard.push(drawn);
+    else owner.hand.push(drawn);
+    count++;
+  }
+  addLog(state, `${U.cardName(sourceCard)} drew ${count} Animal card(s).`);
+}
+
+function resolveCallOfTheWildGods(state, sourceSeat, sourceCard) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner) return;
+  let count = 0;
+  while (count < 2 && owner.board.length < C.MAX_BOARD_SIZE) {
+    const candidates = owner.deck.filter(card => U.isUnit(card) && U.hasTrait(card, "animal") && Number(card.cost || 0) <= 4);
+    if (candidates.length <= 0) break;
+    const summoned = candidates[U.randomInt(candidates.length)];
+    owner.deck.splice(owner.deck.indexOf(summoned), 1);
+    Combat.applySummonState(summoned, owner);
+    owner.board.push(summoned);
+    count++;
+  }
+  U.refreshAttackPermissionsForPlayer(owner);
+  addLog(state, `${U.cardName(sourceCard)} summoned ${count} Animal unit(s) from deck.`);
+}
+
+function resurrectTemporaryPhantom(owner, predicate, grantHaste) {
+  if (!owner || owner.board.length >= C.MAX_BOARD_SIZE) return null;
+  const candidates = owner.graveyard.filter(card => U.isUnit(card) && U.hasTrait(card, "phantom") && predicate(card));
+  if (candidates.length <= 0) return null;
+  const card = candidates[U.randomInt(candidates.length)];
+  owner.graveyard.splice(owner.graveyard.indexOf(card), 1);
+  card.hp = card.max_hp;
+  if (grantHaste && !U.hasKeyword(card, C.KEYWORD_HASTE)) U.addKeyword(card, C.KEYWORD_HASTE);
+  if (!Array.isArray(card.abilities)) card.abilities = [];
+  card.abilities.push({ trigger: C.TRIGGER_TURN_END, effect: "destroy_self" });
+  Combat.applySummonState(card, owner);
+  owner.board.push(card);
+  return card;
+}
+
+function resolveCemeteryLantern(state, sourceSeat, sourceCard) {
+  const owner = U.getPlayer(state, sourceSeat);
+  const revived = resurrectTemporaryPhantom(owner, card => Number(card.attack || 0) <= 2, false);
+  if (owner) U.refreshAttackPermissionsForPlayer(owner);
+  addLog(state, `${U.cardName(sourceCard)} ${revived ? `resurrected ${U.cardName(revived)}` : "found no eligible Phantom"}.`);
+}
+
+function resolveMausoleumPact(state, sourceSeat, sourceCard) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner) return;
+  const candidates = owner.graveyard.filter(card => U.hasTrait(card, "phantom"));
+  if (candidates.length <= 0) {
+    addLog(state, `${U.cardName(sourceCard)} found no Phantom.`);
+    return;
+  }
+  const chosen = candidates[U.randomInt(candidates.length)];
+  owner.graveyard.splice(owner.graveyard.indexOf(chosen), 1);
+  chosen.cost = Math.max(0, Number(chosen.cost || 0) - 2);
+  if (!Array.isArray(chosen.abilities)) chosen.abilities = [];
+  chosen.abilities.push({ trigger: C.TRIGGER_TURN_END, effect: "destroy_self" });
+  CardOps.returnCardToHand(owner, chosen);
+  addLog(state, `${U.cardName(sourceCard)} returned ${U.cardName(chosen)} to hand.`);
+}
+
+function resolveTheLastHaunting(state, sourceSeat, sourceCard) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner) return;
+  let count = 0;
+  while (owner.board.length < C.MAX_BOARD_SIZE) {
+    const revived = resurrectTemporaryPhantom(owner, () => true, true);
+    if (!revived) break;
+    count++;
+  }
+  U.refreshAttackPermissionsForPlayer(owner);
+  addLog(state, `${U.cardName(sourceCard)} resurrected ${count} Phantom unit(s).`);
+}
+
 function resolveTarnishedBookshelfSelectedCard(state, sourceSeat, sourceCard, selectedCard, ctx = {}) {
   const owner = U.getPlayer(state, sourceSeat);
   if (!owner || !selectedCard) return;
@@ -1536,6 +1642,11 @@ module.exports = {
   resolveTemporaryImmobileAllEnemyUnits,
   resolveReturnRandomHandUnitDrawAnotherTraitUnit,
   resolveMasterworkOfArt,
+  resolveDivineMenagerie,
+  resolveCallOfTheWildGods,
+  resolveCemeteryLantern,
+  resolveMausoleumPact,
+  resolveTheLastHaunting,
   resolveRimeOfTheAncientMariner,
   resolveEncompassedCompass,
   resolveStormAndTides,

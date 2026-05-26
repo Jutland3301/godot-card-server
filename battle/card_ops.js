@@ -302,6 +302,10 @@ function getCardPlayCost(player, card) {
     cost = Math.min(cost, 10);
   }
 
+  if (cardId === "fenrir_bound_wolf") {
+    cost -= Number(player.animal_deaths_this_game || 0);
+  }
+
   if (U.isUnit(card) && Number(player.inflation_counters || 0) > 0) {
     cost += 1;
   }

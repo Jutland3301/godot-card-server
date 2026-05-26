@@ -2465,6 +2465,139 @@ func load_card_database() -> void:
 		"abilities": []
 	}
 
+	card_database["ratatoskr_root_messenger"] = {
+		"name": "Ratatoskr, Root Messenger", "type": CARD_TYPE_UNIT, "cost": 1, "attack": 1, "hp": 1,
+		"description": "When played: Draw a card. Then put a random card from your hand on the bottom of your deck.",
+		"traits": ["animal"], "side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/RatatoskrRootMessenger.png",
+		"abilities": [{"trigger": "battlecry", "effect": "draw_then_bottom_random_hand"}]
+	}
+	card_database["sleipnir_eight_legged_steed"] = {
+		"name": "Sleipnir, Eight-Legged Steed", "type": CARD_TYPE_UNIT, "cost": 6, "attack": 4, "hp": 6,
+		"description": "Haste. When this attacks, draw a card. If it is an Animal, it costs 1 less.",
+		"keywords": ["haste"], "traits": ["animal"], "side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/SleipnirEightLeggedSteed.png",
+		"abilities": [{"trigger": "on_ally_unit_attack", "effect": "draw_then_discount_trait", "trait": "animal", "cost_reduction": 1, "only_self": true}]
+	}
+	card_database["fenrir_bound_wolf"] = {
+		"name": "Fenrir, Bound Wolf", "type": CARD_TYPE_UNIT, "cost": 8, "attack": 7, "hp": 7,
+		"description": "Taunt. Costs 1 less for each Animal that died this game. When played: Destroy the enemy unit with the highest Attack.",
+		"keywords": ["taunt"], "traits": ["animal"], "side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/FenrirBoundWolf.png",
+		"abilities": [{"trigger": "battlecry", "effect": "destroy_highest_attack_enemy_unit"}]
+	}
+	card_database["jormungandr_world_serpent"] = {
+		"name": "Jormungandr, World Serpent", "type": CARD_TYPE_UNIT, "cost": 10, "attack": 8, "hp": 12,
+		"description": "When played: Shuffle all Animal cards from your graveyard into your deck. They cost 2 less.",
+		"traits": ["animal"], "side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/JormungandrWorldSerpent.png",
+		"abilities": [{"trigger": "battlecry", "effect": "shuffle_graveyard_trait_into_deck_discount", "trait": "animal", "cost_reduction": 2}]
+	}
+	card_database["cerberus_gatehound"] = {
+		"name": "Cerberus Gatehound", "type": CARD_TYPE_UNIT, "cost": 4, "attack": 3, "hp": 4,
+		"description": "When destroyed: Draw a card. If it is a unit, summon a 2/2 Hound Head.",
+		"traits": ["animal"], "side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/CerberusGatehound.png",
+		"abilities": [{"trigger": "when_destroyed", "effect": "draw_then_summon_if_unit", "card_id": "hound_head"}]
+	}
+	card_database["hound_head"] = {
+		"name": "Hound Head", "type": CARD_TYPE_UNIT, "cost": 0, "attack": 2, "hp": 2,
+		"description": "A loyal hound head.", "tags": ["token"], "traits": ["animal"], "side": CARD_SIDE_GOD,
+		"image_path": "res://Arts/CardImages/HoundHead.png", "abilities": []
+	}
+	card_database["pegasus_of_dawn"] = {
+		"name": "Pegasus of Dawn", "type": CARD_TYPE_UNIT, "cost": 3, "attack": 2, "hp": 3,
+		"description": "Haste. When played: Give another allied Animal +1/+1.",
+		"keywords": ["haste"], "traits": ["animal"], "side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/PegasusOfDawn.png",
+		"abilities": [{"trigger": "battlecry", "effect": "buff_random_other_friendly_trait_unit", "trait": "animal", "attack": 1, "hp": 1}]
+	}
+	card_database["phoenix_ashling"] = {
+		"name": "Phoenix Ashling", "type": CARD_TYPE_UNIT, "cost": 2, "attack": 1, "hp": 1,
+		"description": "When destroyed: Shuffle Phoenix Ashling into your deck with +2/+2.",
+		"traits": ["animal"], "side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/PhoenixAshling.png",
+		"abilities": [{"trigger": "when_destroyed", "effect": "shuffle_buffed_copy_to_deck", "attack": 2, "hp": 2}]
+	}
+	card_database["sacred_cow_of_plenty"] = {
+		"name": "Sacred Cow of Plenty", "type": CARD_TYPE_UNIT, "cost": 3, "attack": 1, "hp": 4,
+		"description": "Turn End: Restore 2 health to your leader.", "traits": ["animal"], "side": CARD_SIDE_GOD,
+		"image_path": "res://Arts/CardImages/SacredCowOfPlenty.png",
+		"abilities": [{"trigger": "turn_end", "effect": "heal_leader", "amount": 2}]
+	}
+	card_database["white_stag"] = {
+		"name": "White Stag", "type": CARD_TYPE_UNIT, "cost": 2, "attack": 2, "hp": 3,
+		"description": "When played: If your hand has 5 or more cards, gain +1/+1.", "traits": ["animal"], "side": CARD_SIDE_GOD,
+		"image_path": "res://Arts/CardImages/WhiteStag.png",
+		"abilities": [{"trigger": "battlecry", "effect": "buff_self_if_hand_size_at_least", "required_count": 5, "attack": 1, "hp": 1}]
+	}
+	card_database["divine_menagerie"] = {
+		"name": "Divine Menagerie", "type": CARD_TYPE_SPELL, "cost": 5, "effect_id": "divine_menagerie", "target_type": TARGET_NONE,
+		"description": "Draw 2 Animal cards. They gain +1/+1.", "traits": ["animal"], "side": CARD_SIDE_GOD,
+		"image_path": "res://Arts/CardImages/DivineMenagerie.png", "abilities": []
+	}
+	card_database["call_of_the_wild_gods"] = {
+		"name": "Call of the Wild Gods", "type": CARD_TYPE_SPELL, "cost": 7, "effect_id": "call_of_the_wild_gods", "target_type": TARGET_NONE,
+		"description": "Summon two random Animal units from your deck with cost 4 or less.", "traits": ["animal"], "side": CARD_SIDE_GOD,
+		"image_path": "res://Arts/CardImages/CallOfTheWildGods.png", "abilities": []
+	}
+	card_database["wandering_shade"] = {
+		"name": "Wandering Shade", "type": CARD_TYPE_UNIT, "cost": 1, "attack": 1, "hp": 1,
+		"description": "When destroyed: Add a 1/1 Phantom Echo to your graveyard.", "traits": ["phantom"], "side": CARD_SIDE_GOD,
+		"image_path": "res://Arts/CardImages/WanderingShade.png",
+		"abilities": [{"trigger": "when_destroyed", "effect": "add_card_to_graveyard", "card_id": "phantom_echo"}]
+	}
+	card_database["phantom_echo"] = {
+		"name": "Phantom Echo", "type": CARD_TYPE_UNIT, "cost": 1, "attack": 1, "hp": 1,
+		"description": "Haste. At the end of your turn, destroy this.", "keywords": ["haste"], "tags": ["token"], "traits": ["phantom"],
+		"side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/PhantomEcho.png",
+		"abilities": [{"trigger": "turn_end", "effect": "destroy_self"}]
+	}
+	card_database["grave_whisperer"] = {
+		"name": "Grave Whisperer", "type": CARD_TYPE_UNIT, "cost": 2, "attack": 1, "hp": 3,
+		"description": "When played: If a Phantom is in your graveyard, draw a card.", "traits": ["phantom"], "side": CARD_SIDE_GOD,
+		"image_path": "res://Arts/CardImages/GraveWhisperer.png",
+		"abilities": [{"trigger": "battlecry", "effect": "draw_if_graveyard_has_trait", "trait": "phantom", "amount": 1}]
+	}
+	card_database["pale_mourner"] = {
+		"name": "Pale Mourner", "type": CARD_TYPE_UNIT, "cost": 3, "attack": 2, "hp": 4,
+		"description": "Whenever an allied Phantom is destroyed, this gains +2 Attack.", "traits": ["phantom"], "side": CARD_SIDE_GOD,
+		"image_path": "res://Arts/CardImages/PaleMourner.png",
+		"abilities": [{"trigger": "on_ally_unit_destroyed", "effect": "buff_self_if_destroyed_trait", "trait": "phantom", "attack": 2}]
+	}
+	card_database["mirror_wraith"] = {
+		"name": "Mirror Wraith", "type": CARD_TYPE_UNIT, "cost": 4, "attack": 3, "hp": 3,
+		"description": "When played: Copy the last allied Phantom that died this game into your hand. It costs 1 more.", "traits": ["phantom"],
+		"side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/MirrorWraith.png",
+		"abilities": [{"trigger": "battlecry", "effect": "copy_last_destroyed_trait_to_hand", "trait": "phantom", "cost_increase": 1}]
+	}
+	card_database["cemetery_lantern"] = {
+		"name": "Cemetery Lantern", "type": CARD_TYPE_SPELL, "cost": 2, "effect_id": "cemetery_lantern", "target_type": TARGET_NONE,
+		"description": "Resurrect a Phantom with 2 or less Attack. It is destroyed at the end of your turn.", "traits": ["phantom"],
+		"side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/CemeteryLantern.png", "abilities": []
+	}
+	card_database["the_unfinished_duelist"] = {
+		"name": "The Unfinished Duelist", "type": CARD_TYPE_UNIT, "cost": 4, "attack": 5, "hp": 3,
+		"description": "Haste. When this attacks and survives, return this to your hand.", "keywords": ["haste"], "traits": ["phantom"],
+		"side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/TheUnfinishedDuelist.png",
+		"abilities": [{"trigger": "on_ally_unit_attack", "effect": "return_self_to_hand_after_attack", "only_self": true}]
+	}
+	card_database["bride_beneath_the_veil"] = {
+		"name": "Bride Beneath the Veil", "type": CARD_TYPE_UNIT, "cost": 6, "attack": 3, "hp": 6,
+		"description": "Taunt. When destroyed: Resurrect the lowest-cost Phantom from your graveyard.", "keywords": ["taunt"], "traits": ["phantom"],
+		"side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/BrideBeneathTheVeil.png",
+		"abilities": [{"trigger": "when_destroyed", "effect": "resurrect_lowest_cost_trait_unit", "trait": "phantom"}]
+	}
+	card_database["king_of_empty_graves"] = {
+		"name": "King of Empty Graves", "type": CARD_TYPE_UNIT, "cost": 8, "attack": 6, "hp": 6,
+		"description": "When played: Resurrect up to 3 Phantoms. Then destroy all allied non-Phantom units.", "traits": ["phantom"],
+		"side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/KingOfEmptyGraves.png",
+		"abilities": [{"trigger": "battlecry", "effect": "resurrect_trait_then_destroy_non_trait", "trait": "phantom", "amount": 3}]
+	}
+	card_database["mausoleum_pact"] = {
+		"name": "Mausoleum Pact", "type": CARD_TYPE_SPELL, "cost": 4, "effect_id": "mausoleum_pact", "target_type": TARGET_NONE,
+		"description": "Choose a Phantom in your graveyard. Add it to your hand. It costs 2 less and dies at turn end after it is played.",
+		"traits": ["phantom"], "side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/MausoleumPact.png", "abilities": []
+	}
+	card_database["the_last_haunting"] = {
+		"name": "The Last Haunting", "type": CARD_TYPE_SPELL, "cost": 9, "effect_id": "the_last_haunting", "target_type": TARGET_NONE,
+		"description": "Resurrect all allied Phantoms that died this game. They gain Haste. At the end of your turn, destroy them.",
+		"traits": ["phantom"], "side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/TheLastHaunting.png", "abilities": []
+	}
+
 
 func make_test_deck() -> Array[CardData]:
 	var deck_ids: Array[String] = [
