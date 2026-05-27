@@ -27,6 +27,7 @@ function createAuthService({ query }) {
     schemaPromise = (async () => {
       await query("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT");
       await query("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT");
+      await query("ALTER TABLE users ADD COLUMN IF NOT EXISTS tutorial_completed BOOLEAN NOT NULL DEFAULT FALSE");
       await query("ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()");
       await query(`
         UPDATE users
@@ -115,7 +116,8 @@ function createAuthService({ query }) {
     return {
       id: Number(row.id),
       username: String(row.username),
-      display_name: String(row.display_name || row.username)
+      display_name: String(row.display_name || row.username),
+      tutorial_completed: Boolean(row.tutorial_completed)
     };
   }
 
@@ -151,7 +153,7 @@ function createAuthService({ query }) {
         `
         INSERT INTO users (username, password_hash, display_name, updated_at)
         VALUES ($1, $2, $3, NOW())
-        RETURNING id, username, display_name
+        RETURNING id, username, display_name, tutorial_completed
         `,
         [username, passwordHash, displayName]
       );
@@ -174,8 +176,8 @@ function createAuthService({ query }) {
 
     const username = String(rawUsername || "").trim();
     const selectFields = hasLegacyPasswordColumn
-      ? "id, username, display_name, password_hash, password"
-      : "id, username, display_name, password_hash";
+      ? "id, username, display_name, tutorial_completed, password_hash, password"
+      : "id, username, display_name, tutorial_completed, password_hash";
     const result = await query(
       `SELECT ${selectFields} FROM users WHERE username = $1 LIMIT 1`,
       [username]
@@ -225,7 +227,7 @@ function createAuthService({ query }) {
 
     const result = await query(
       `
-      SELECT users.id, users.username, users.display_name
+      SELECT users.id, users.username, users.display_name, users.tutorial_completed
       FROM user_sessions
       INNER JOIN users ON users.id = user_sessions.user_id
       WHERE user_sessions.token_hash = $1
@@ -259,6 +261,26 @@ function createAuthService({ query }) {
     );
   }
 
+  async function completeTutorial(userId) {
+    await ensureSchema();
+
+    const result = await query(
+      `
+      UPDATE users
+      SET tutorial_completed = TRUE, updated_at = NOW()
+      WHERE id = $1
+      RETURNING id, username, display_name, tutorial_completed
+      `,
+      [userId]
+    );
+
+    if (result.rows.length <= 0) {
+      throw authError(404, "User not found.");
+    }
+
+    return toPublicUser(result.rows[0]);
+  }
+
   return {
     ensureSchema,
     validateUsername,
@@ -271,7 +293,8 @@ function createAuthService({ query }) {
     register,
     login,
     revokeSession,
-    getUserBySessionToken
+    getUserBySessionToken,
+    completeTutorial
   };
 }
 

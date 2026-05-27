@@ -33,7 +33,12 @@ function createAuthRoutes({ authService, readJsonBody, sendJson }) {
 
     try {
       const result = await authService.register(body);
-      sendJson(res, 200, { ok: true, user: result.user, token: result.token });
+      sendJson(res, 200, {
+        ok: true,
+        user: result.user,
+        token: result.token,
+        tutorial_completed: result.user.tutorial_completed
+      });
     } catch (error) {
       sendAuthFailure(res, error);
     }
@@ -48,7 +53,12 @@ function createAuthRoutes({ authService, readJsonBody, sendJson }) {
 
     try {
       const result = await authService.login(body);
-      sendJson(res, 200, { ok: true, user: result.user, token: result.token });
+      sendJson(res, 200, {
+        ok: true,
+        user: result.user,
+        token: result.token,
+        tutorial_completed: result.user.tutorial_completed
+      });
     } catch (error) {
       sendAuthFailure(res, error);
     }
@@ -66,14 +76,38 @@ function createAuthRoutes({ authService, readJsonBody, sendJson }) {
       return;
     }
 
-    sendJson(res, 200, { ok: true, user });
+    sendJson(res, 200, {
+      ok: true,
+      user,
+      tutorial_completed: user.tutorial_completed
+    });
+  }
+
+  async function completeTutorial(req, res, requireAuth) {
+    const user = await requireAuth(req, res);
+
+    if (!user) {
+      return;
+    }
+
+    try {
+      const updatedUser = await authService.completeTutorial(user.id);
+      sendJson(res, 200, {
+        ok: true,
+        tutorial_completed: true,
+        user: updatedUser
+      });
+    } catch (error) {
+      sendAuthFailure(res, error);
+    }
   }
 
   return {
     register,
     login,
     logout,
-    me
+    me,
+    completeTutorial
   };
 }
 

@@ -687,6 +687,11 @@ async function handleHttp(req, res) {
       return;
     }
 
+    if (req.method === "POST" && path === "/tutorial/complete") {
+      await authRoutes.completeTutorial(req, res, requireUser);
+      return;
+    }
+
     if (req.method === "GET" && path === "/collection") {
       await handleCollection(req, res);
       return;
