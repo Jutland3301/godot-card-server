@@ -456,49 +456,53 @@ function makeCardFromId(cardId) {
 
   if (!data) {
     console.log("[CARD DB] Unknown card_id:", cleanCardId);
-
-    return {
-      card_id: cleanCardId,
-      card_name: cleanCardId,
-      display_name: cleanCardId,
-      cost: 0,
-      power: 0,
-      card_type: "unit",
-      target_type: "none",
-      effect_id: "none",
-      trigger_id: "none",
-      description: "",
-
-      attack: 0,
-      hp: 1,
-      max_hp: 1,
-      armor: 0,
-      base_attack: 0,
-      base_hp: 1,
-
-      side: "neutral",
-      traits: [],
-      keywords: [],
-      tags: [],
-      abilities: [],
-
-      can_attack: false,
-      exhausted: true,
-      summoned_this_turn: false,
-      has_attacked_this_turn: false,
-      attacks_this_turn: 0,
-      max_attacks_per_turn: 1,
-
-      temporary_keywords: {},
-      once_per_turn_flags: {},
-
-      attack_sfx: "",
-      defense_sfx: "",
-      play_sfx: "",
-      death_sfx: ""
-    };
+    return null;
   }
 
+  const attack = Number(data.attack || 0);
+  const hp = Number(data.hp || 0);
+
+  return {
+    card_id: cleanCardId,
+    card_name: String(data.name || cleanCardId),
+    display_name: String(data.name || cleanCardId),
+    cost: Number(data.cost || 0),
+    power: Number(data.power || 0),
+    card_type: String(data.type || "spell"),
+    target_type: String(data.target_type || "none"),
+    effect_id: String(data.effect_id || "none"),
+    trigger_id: String(data.trigger_id || "none"),
+    description: String(data.description || ""),
+
+    attack,
+    hp,
+    max_hp: Number(data.max_hp || hp),
+    armor: Number(data.armor || 0),
+    base_attack: Number(data.base_attack || attack),
+    base_hp: Number(data.base_hp || hp),
+
+    side: String(data.side || "human"),
+    traits: normalizeStringArray(data.traits),
+    keywords: normalizeStringArray(data.keywords),
+    tags: normalizeStringArray(data.tags),
+    abilities: normalizeAbilityArray(data.abilities),
+
+    can_attack: false,
+    exhausted: true,
+    summoned_this_turn: false,
+    has_attacked_this_turn: false,
+    attacks_this_turn: 0,
+    max_attacks_per_turn: Number(data.max_attacks_per_turn || 1),
+
+    temporary_keywords: {},
+    once_per_turn_flags: {},
+
+    attack_sfx: String(data.attack_sfx || ""),
+    defense_sfx: String(data.defense_sfx || ""),
+    play_sfx: String(data.play_sfx || ""),
+    death_sfx: String(data.death_sfx || "")
+  };
+}
   const attack = Number(data.attack || 0);
   const hp = Number(data.hp || 0);
 
