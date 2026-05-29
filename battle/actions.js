@@ -8,6 +8,7 @@ const Combat = require("./combat");
 const Effects = require("./effects");
 const Targets = require("./targets");
 const Triggers = require("./triggers");
+const Cards = require("./cards_database");
 
 function ensureState(state) {
   S.normalizeState(state);
@@ -108,6 +109,41 @@ function getCardTrace(card) {
     cost: Number(card.cost || 0),
     effective_cost: null
   };
+}
+
+function getCardId(card) {
+  return String(card?.card_id || card?.cardId || card?.id || "").trim();
+}
+
+function rejectUnknownHandCard(state, seatId, player, handIndex, card, deps = {}, label = "unknown_card") {
+  const cardId = getCardId(card);
+  const reason = "Unknown card_id: " + cardId;
+
+  manaTrace(deps, label, {
+    ...getPlayerTrace(state, seatId, player),
+    hand_index: Number(handIndex),
+    raw_card: getCardTrace(card),
+    player_mana: player ? Number(player.mana || 0) : null,
+    validate_ok: false,
+    reject_reason: reason,
+    board_added: false,
+    hand_removed: false,
+    mana_consumed: false
+  });
+
+  addLog(state, reason);
+  S.syncLegacy(state);
+
+  return { ok: false, state, message: reason };
+}
+
+function isKnownHandCard(card) {
+  const cardId = getCardId(card);
+  if (cardId === "") {
+    return false;
+  }
+
+  return Cards.hasCardDefinition(cardId);
 }
 
 function manaTrace(deps, label, data = {}) {
@@ -400,6 +436,21 @@ function consumeCardFromHandAndPayCost(state, seatId, handIndex, deps = {}) {
 
   const card = player.hand[index];
   S.normalizeCard(card);
+  if (!isKnownHandCard(card)) {
+  manaTrace(deps, "consumeCardFromHandAndPayCost.unknown_card", {
+    ...getPlayerTrace(state, seatId, player),
+    hand_index: index,
+    raw_card: getCardTrace(card),
+    player_mana: Number(player.mana || 0),
+    consumed: false,
+    reject_reason: "Unknown card_id: " + getCardId(card),
+    board_added: false,
+    hand_removed: false,
+    mana_consumed: false
+  });
+
+  return null;
+}
 
   const cost = CardOps.getCardPlayCost(player, card);
   const manaBefore = Number(player.mana || 0);
@@ -475,6 +526,18 @@ function playCardFromHand(state, seatId, handIndex, target = null, deps = {}, op
   const player = U.getPlayer(state, seatId);
   const index = Number(handIndex);
   const card = player?.hand?.[index] || null;
+
+  if (card && !isKnownHandCard(card)) {
+  return rejectUnknownHandCard(
+    state,
+    seatId,
+    player,
+    index,
+    card,
+    deps,
+    "playCardFromHand.unknown_card"
+  );
+}
 
   manaTrace(deps, "playCardFromHand.enter", {
     ...getPlayerTrace(state, seatId, player),
@@ -822,6 +885,18 @@ function handleHandCardClicked(state, seatId, payload, deps = {}) {
 
   const card = player.hand[handIndex];
   S.normalizeCard(card);
+  
+  if (!isKnownHandCard(card)) {
+    return rejectUnknownHandCard(
+      state,
+      seatId,
+      player,
+      handIndex,
+      card,
+      deps,
+      "handleHandCardClicked.unknown_card"
+    );
+  }
 
   manaTrace(deps, "handleHandCardClicked.card", {
     ...getPlayerTrace(state, seatId, player),
