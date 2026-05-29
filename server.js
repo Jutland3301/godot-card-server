@@ -3,6 +3,7 @@
 const http = require("http");
 const { WebSocketServer, WebSocket } = require("ws");
 const { Pool } = require("pg");
+const packageInfo = require("./package.json");
 const { makeCardFromId, getAvailableCardIds } = require("./cards_database");
 const BattleEngine = require("./battle_engine");
 const { createAuthService } = require("./auth_service");
@@ -21,6 +22,11 @@ const TURN_TIME_LIMIT_SECONDS = 45.0;
 const MAX_HAND_SIZE = 7;
 const MATCH_TIMER_TICK_MS = 250;
 const MATCH_RECONNECT_GRACE_MS = Number(process.env.MATCH_RECONNECT_GRACE_MS || 120000);
+const SERVER_COMMIT =
+  process.env.RENDER_GIT_COMMIT ||
+  process.env.COMMIT_SHA ||
+  process.env.GIT_COMMIT ||
+  "unknown";
 
 const pool = DATABASE_URL
   ? new Pool({
@@ -1740,13 +1746,29 @@ async function handleClientMessage(client, message) {
         action
       };
 
+      console.log("[MANA_TRACE]", "server.battle_action.enter", JSON.stringify({
+        action_type: action,
+        client_id: client.client_id,
+        match_id: matchId,
+        seat_id: seatId,
+        hand_index: payload.hand_index ?? payload.handIndex ?? payload.index ?? null,
+        payload
+      }));
+
       let result = null;
 
       try {
         match.state = normalizeAuthoritativeState(match.state);
 
         result = BattleEngine.handleBattleAction(match, seatId, enginePayload, {
-          makeCardFromId
+          makeCardFromId,
+          manaTrace: {
+            action_type: action,
+            client_id: client.client_id,
+            match_id: matchId,
+            seat_id: seatId,
+            payload
+          }
         });
       } catch (error) {
         console.error(
@@ -1765,6 +1787,16 @@ async function handleClientMessage(client, message) {
       }
 
       if (!result || result.ok !== true) {
+        console.log("[MANA_TRACE]", "server.battle_action.rejected", JSON.stringify({
+          action_type: action,
+          client_id: client.client_id,
+          match_id: matchId,
+          seat_id: seatId,
+          hand_index: payload.hand_index ?? payload.handIndex ?? payload.index ?? null,
+          reject_reason: result && (result.reason || result.message)
+            ? (result.reason || result.message)
+            : "Action rejected."
+        }));
         sendActionRejected(
           client.client_id,
           result && (result.reason || result.message)
@@ -1776,6 +1808,14 @@ async function handleClientMessage(client, message) {
 
       match.state = normalizeAuthoritativeState(match.state);
       match.last_timer_update_at = Date.now();
+
+      console.log("[MANA_TRACE]", "server.battle_action.accepted", JSON.stringify({
+        action_type: action,
+        client_id: client.client_id,
+        match_id: matchId,
+        seat_id: seatId,
+        hand_index: payload.hand_index ?? payload.handIndex ?? payload.index ?? null
+      }));
 
       broadcastMatchState(matchId);
 
@@ -1978,6 +2018,15 @@ wss.on("connection", (ws, req) => {
       }
 
       console.log("[CLIENT MESSAGE]", clientId, "type=", String(message.type || ""));
+      console.log("[MANA_TRACE]", "server.ws_message.received", JSON.stringify({
+        version: String(packageInfo.version || ""),
+        commit: SERVER_COMMIT,
+        client_id: clientId,
+        message_type: String(message.type || ""),
+        action_type: String(message.action || ""),
+        match_id: String(message.match_id || ""),
+        seat_id: String(message.seat_id || "")
+      }));
       Promise.resolve(handleClientMessage(client, message)).catch((error) => {
         console.error("[CLIENT MESSAGE ERROR]", clientId);
         console.error(error && error.stack ? error.stack : error);
@@ -2016,6 +2065,12 @@ async function startServer() {
   }
 
   server.listen(PORT, () => {
+    console.log("[BOOT]", JSON.stringify({
+      name: String(packageInfo.name || ""),
+      version: String(packageInfo.version || ""),
+      commit: SERVER_COMMIT,
+      mana_trace_enabled: true
+    }));
     console.log(`[SERVER] Node authoritative gateway + save API listening on port ${PORT}`);
   });
 }

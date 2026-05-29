@@ -69,6 +69,55 @@ function getPayloadHandIndex(payload) {
   return Number(raw);
 }
 
+function isManaTraceEnabled(deps = {}) {
+  return Boolean(deps && deps.manaTrace);
+}
+
+function getManaTraceBase(deps = {}) {
+  const trace = deps && deps.manaTrace ? deps.manaTrace : {};
+  return {
+    action_type: String(trace.action_type || trace.action || ""),
+    client_id: String(trace.client_id || ""),
+    match_id: String(trace.match_id || ""),
+    seat_id: String(trace.seat_id || "")
+  };
+}
+
+function getPlayerTrace(state, seatId, player) {
+  return {
+    current_player: String(state.current_player_id || state.turn_owner_id || state.turn_seat || ""),
+    current_turn_player: String(state.turn_seat || ""),
+    player_side: String(player && player.side ? player.side : ""),
+    player_index: seatId === C.SEAT_A ? 1 : seatId === C.SEAT_B ? 2 : -1
+  };
+}
+
+function getCardTrace(card) {
+  if (!card || typeof card !== "object") {
+    return {
+      card_id: "",
+      card_name: "",
+      cost: null,
+      effective_cost: null
+    };
+  }
+
+  return {
+    card_id: String(card.card_id || card.cardId || card.id || ""),
+    card_name: String(card.card_name || card.cardName || card.name || ""),
+    cost: Number(card.cost || 0),
+    effective_cost: null
+  };
+}
+
+function manaTrace(deps, label, data = {}) {
+  if (!isManaTraceEnabled(deps)) return;
+  console.log("[MANA_TRACE]", label, JSON.stringify({
+    ...getManaTraceBase(deps),
+    ...data
+  }));
+}
+
 function getPayloadBoardIndex(payload) {
   const raw =
     payload.board_index ??
@@ -203,67 +252,217 @@ function cancelTargetSelection(state, seatId) {
 }
 
 function validateCanPlayCard(state, seatId, player, card, options = {}) {
+  const traceDeps = options.traceDeps || {};
   const allowDuringSelection = Boolean(options.allowDuringSelection || false);
 
   const turn = validateTurnAction(state, seatId);
   if (!turn.ok) {
+    manaTrace(traceDeps, "validateCanPlayCard", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: Number(options.handIndex ?? -1),
+      player_mana: player ? Number(player.mana || 0) : null,
+      effective_cost: player && card ? CardOps.getCardPlayCost(player, card) : null,
+      validate_ok: false,
+      reject_reason: turn.message
+    });
     return { ok: false, message: turn.message };
   }
 
   if (!player) {
+    manaTrace(traceDeps, "validateCanPlayCard", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: Number(options.handIndex ?? -1),
+      validate_ok: false,
+      reject_reason: "Player is missing."
+    });
     return { ok: false, message: "Player is missing." };
   }
 
   if (!card) {
+    manaTrace(traceDeps, "validateCanPlayCard", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: Number(options.handIndex ?? -1),
+      player_mana: Number(player.mana || 0),
+      validate_ok: false,
+      reject_reason: "Card is missing."
+    });
     return { ok: false, message: "Card is missing." };
   }
 
   if (!allowDuringSelection && (state.selecting_target || state.selecting_hand_card)) {
+    manaTrace(traceDeps, "validateCanPlayCard", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: Number(options.handIndex ?? -1),
+      player_mana: Number(player.mana || 0),
+      effective_cost: CardOps.getCardPlayCost(player, card),
+      validate_ok: false,
+      reject_reason: "Already selecting a target."
+    });
     return { ok: false, message: "Already selecting a target." };
   }
 
   const cost = CardOps.getCardPlayCost(player, card);
   if (Number(player.mana || 0) < cost) {
+    manaTrace(traceDeps, "validateCanPlayCard", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: Number(options.handIndex ?? -1),
+      card: {
+        ...getCardTrace(card),
+        effective_cost: cost
+      },
+      player_mana: Number(player.mana || 0),
+      effective_cost: cost,
+      validate_ok: false,
+      reject_reason: "Not enough mana."
+    });
     return { ok: false, message: "Not enough mana." };
   }
 
   if (U.isUnit(card) && Array.isArray(player.board) && player.board.length >= C.MAX_BOARD_SIZE) {
     if (String(card.card_id || "") !== "nimbus_outpost") {
+      manaTrace(traceDeps, "validateCanPlayCard", {
+        ...getPlayerTrace(state, seatId, player),
+        hand_index: Number(options.handIndex ?? -1),
+        card: {
+          ...getCardTrace(card),
+          effective_cost: cost
+        },
+        player_mana: Number(player.mana || 0),
+        effective_cost: cost,
+        validate_ok: false,
+        reject_reason: "Board is full."
+      });
       return { ok: false, message: "Board is full." };
     }
   }
   if (U.isSpell(card)) {
     if (!Targets.hasValidPlayTargetForCard(state, seatId, card)) {
+      manaTrace(traceDeps, "validateCanPlayCard", {
+        ...getPlayerTrace(state, seatId, player),
+        hand_index: Number(options.handIndex ?? -1),
+        card: {
+          ...getCardTrace(card),
+          effective_cost: cost
+        },
+        player_mana: Number(player.mana || 0),
+        effective_cost: cost,
+        validate_ok: false,
+        reject_reason: "No valid target for this card."
+      });
       return { ok: false, message: "No valid target for this card." };
     }
   }
 
+  manaTrace(traceDeps, "validateCanPlayCard", {
+    ...getPlayerTrace(state, seatId, player),
+    hand_index: Number(options.handIndex ?? -1),
+    card: {
+      ...getCardTrace(card),
+      effective_cost: cost
+    },
+    player_mana: Number(player.mana || 0),
+    effective_cost: cost,
+    validate_ok: true,
+    reject_reason: ""
+  });
+
   return { ok: true, message: "ok" };
 }
 
-function consumeCardFromHandAndPayCost(state, seatId, handIndex) {
+function consumeCardFromHandAndPayCost(state, seatId, handIndex, deps = {}) {
   const player = U.getPlayer(state, seatId);
-  if (!player) return null;
+  manaTrace(deps, "consumeCardFromHandAndPayCost.enter", {
+    ...getPlayerTrace(state, seatId, player),
+    hand_index: Number(handIndex),
+    entered_consume: true
+  });
+  if (!player) {
+    manaTrace(deps, "consumeCardFromHandAndPayCost.exit", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: Number(handIndex),
+      consumed: false,
+      reject_reason: "Player is missing."
+    });
+    return null;
+  }
 
   const index = Number(handIndex);
-  if (index < 0 || index >= player.hand.length) return null;
+  if (index < 0 || index >= player.hand.length) {
+    manaTrace(deps, "consumeCardFromHandAndPayCost.exit", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: index,
+      player_mana: Number(player.mana || 0),
+      consumed: false,
+      reject_reason: "Invalid hand index."
+    });
+    return null;
+  }
 
   const card = player.hand[index];
   S.normalizeCard(card);
 
   const cost = CardOps.getCardPlayCost(player, card);
+  const manaBefore = Number(player.mana || 0);
+  manaTrace(deps, "consumeCardFromHandAndPayCost.before_spend", {
+    ...getPlayerTrace(state, seatId, player),
+    hand_index: index,
+    raw_card: getCardTrace(card),
+    hydrated_card: {
+      ...getCardTrace(card),
+      effective_cost: cost
+    },
+    player_mana: manaBefore,
+    mana_before: manaBefore,
+    effective_cost: cost
+  });
   if (!CardOps.spendMana(player, cost)) {
+    manaTrace(deps, "consumeCardFromHandAndPayCost.spend_failed", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: index,
+      player_mana: Number(player.mana || 0),
+      mana_before: manaBefore,
+      mana_after: Number(player.mana || 0),
+      effective_cost: cost,
+      consumed: false,
+      reject_reason: "spendMana returned false"
+    });
     return null;
   }
 
+  const manaAfterSpend = Number(player.mana || 0);
   const playedCard = CardOps.removeCardFromHand(player, index);
   if (!playedCard) {
     player.mana = Number(player.mana || 0) + cost;
+    manaTrace(deps, "consumeCardFromHandAndPayCost.remove_failed", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: index,
+      player_mana: Number(player.mana || 0),
+      mana_before: manaBefore,
+      mana_after: Number(player.mana || 0),
+      mana_after_spend: manaAfterSpend,
+      effective_cost: cost,
+      consumed: false,
+      reject_reason: "removeCardFromHand returned null"
+    });
     return null;
   }
 
   CardOps.applyPlayCostPostEffects(player, playedCard);
   S.normalizeCard(playedCard);
+
+  manaTrace(deps, "consumeCardFromHandAndPayCost.exit", {
+    ...getPlayerTrace(state, seatId, player),
+    hand_index: index,
+    played_card: {
+      ...getCardTrace(playedCard),
+      effective_cost: cost
+    },
+    player_mana: Number(player.mana || 0),
+    mana_before: manaBefore,
+    mana_after: Number(player.mana || 0),
+    effective_cost: cost,
+    consumed: true
+  });
 
   return playedCard;
 }
@@ -277,11 +476,35 @@ function playCardFromHand(state, seatId, handIndex, target = null, deps = {}, op
   const index = Number(handIndex);
   const card = player?.hand?.[index] || null;
 
+  manaTrace(deps, "playCardFromHand.enter", {
+    ...getPlayerTrace(state, seatId, player),
+    hand_index: index,
+    raw_card: getCardTrace(card),
+    hydrated_card: card ? {
+      ...getCardTrace(card),
+      effective_cost: player ? CardOps.getCardPlayCost(player, card) : null
+    } : getCardTrace(card),
+    player_mana: player ? Number(player.mana || 0) : null,
+    effective_cost: player && card ? CardOps.getCardPlayCost(player, card) : null,
+    board_count_before: player && Array.isArray(player.board) ? player.board.length : null
+  });
+
   const playCheck = validateCanPlayCard(state, seatId, player, card, {
-    allowDuringSelection
+    allowDuringSelection,
+    handIndex: index,
+    traceDeps: deps
   });
 
   if (!playCheck.ok) {
+    manaTrace(deps, "playCardFromHand.rejected", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: index,
+      player_mana: player ? Number(player.mana || 0) : null,
+      effective_cost: player && card ? CardOps.getCardPlayCost(player, card) : null,
+      validate_ok: false,
+      reject_reason: playCheck.message,
+      board_added: false
+    });
     return { ok: false, state, message: playCheck.message };
   }
 
@@ -297,8 +520,15 @@ function playCardFromHand(state, seatId, handIndex, target = null, deps = {}, op
     }
   }
 
-  const playedCard = consumeCardFromHandAndPayCost(state, seatId, index);
+  const playedCard = consumeCardFromHandAndPayCost(state, seatId, index, deps);
   if (!playedCard) {
+    manaTrace(deps, "playCardFromHand.consume_failed", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: index,
+      player_mana: player ? Number(player.mana || 0) : null,
+      reject_reason: "Failed to play card.",
+      board_added: false
+    });
     return { ok: false, state, message: "Failed to play card." };
   }
 
@@ -313,6 +543,13 @@ function playCardFromHand(state, seatId, handIndex, target = null, deps = {}, op
   }
 
   CardOps.moveCardToGraveyard(player, playedCard);
+  manaTrace(deps, "playCardFromHand.non_unit_non_spell", {
+    ...getPlayerTrace(state, seatId, player),
+    hand_index: index,
+    played_card: getCardTrace(playedCard),
+    player_mana: Number(player.mana || 0),
+    board_added: false
+  });
   addLog(state, `${player.name} played ${U.cardName(playedCard)}.`);
   S.syncLegacy(state);
 
@@ -322,6 +559,12 @@ function playCardFromHand(state, seatId, handIndex, target = null, deps = {}, op
 function playUnitCard(state, seatId, playedCard, target = null, deps = {}) {
   const player = U.getPlayer(state, seatId);
   if (!player) {
+    manaTrace(deps, "playUnitCard.rejected", {
+      ...getPlayerTrace(state, seatId, player),
+      played_card: getCardTrace(playedCard),
+      board_added: false,
+      reject_reason: "Player is missing."
+    });
     return { ok: false, state, message: "Player is missing." };
   }
 
@@ -363,7 +606,16 @@ function playUnitCard(state, seatId, playedCard, target = null, deps = {}) {
     playedCard.base_hp = Number(playedCard.max_hp || playedCard.hp || 0);
 
     Combat.applySummonState(playedCard, player);
+    const boardCountBeforeNimbus = player.board.length;
     player.board.push(playedCard);
+    manaTrace(deps, "playUnitCard.board_added", {
+      ...getPlayerTrace(state, seatId, player),
+      played_card: getCardTrace(playedCard),
+      player_mana: Number(player.mana || 0),
+      board_count_before: boardCountBeforeNimbus,
+      board_count_after: player.board.length,
+      board_added: true
+    });
 
     CardOps.incrementPlayedTraitCounts(player, playedCard);
     Triggers.resolveOnUnitPlayed(state, seatId, playedCard, deps);
@@ -377,7 +629,16 @@ function playUnitCard(state, seatId, playedCard, target = null, deps = {}) {
 
   Combat.applySummonState(playedCard, player);
 
+  const boardCountBefore = player.board.length;
   player.board.push(playedCard);
+  manaTrace(deps, "playUnitCard.board_added", {
+    ...getPlayerTrace(state, seatId, player),
+    played_card: getCardTrace(playedCard),
+    player_mana: Number(player.mana || 0),
+    board_count_before: boardCountBefore,
+    board_count_after: player.board.length,
+    board_added: true
+  });
 
   CardOps.incrementPlayedTraitCounts(player, playedCard);
 
@@ -403,6 +664,12 @@ function playUnitCard(state, seatId, playedCard, target = null, deps = {}) {
 function playSpellCard(state, seatId, playedCard, target = null, deps = {}) {
   const player = U.getPlayer(state, seatId);
   if (!player) {
+    manaTrace(deps, "playSpellCard.rejected", {
+      ...getPlayerTrace(state, seatId, player),
+      played_card: getCardTrace(playedCard),
+      board_added: false,
+      reject_reason: "Player is missing."
+    });
     return { ok: false, state, message: "Player is missing." };
   }
 
@@ -422,6 +689,12 @@ function playSpellCard(state, seatId, playedCard, target = null, deps = {}) {
   );
 
   if (result && result.pending) {
+    manaTrace(deps, "playSpellCard.pending", {
+      ...getPlayerTrace(state, seatId, player),
+      played_card: getCardTrace(playedCard),
+      player_mana: Number(player.mana || 0),
+      board_added: false
+    });
     S.syncLegacy(state);
     return { ok: true, state };
   }
@@ -441,6 +714,12 @@ function playSpellCard(state, seatId, playedCard, target = null, deps = {}) {
   CardOps.moveCardToGraveyard(player, playedCard);
 
   Combat.processDeathQueue(state, deps);
+  manaTrace(deps, "playSpellCard.resolved", {
+    ...getPlayerTrace(state, seatId, player),
+    played_card: getCardTrace(playedCard),
+    player_mana: Number(player.mana || 0),
+    board_added: false
+  });
   addLog(state, `${player.name} cast ${U.cardName(playedCard)}.`);
   S.syncLegacy(state);
 
@@ -491,9 +770,21 @@ function resolvePendingCardTarget(state, seatId, target, deps = {}) {
 
 function handleHandCardClicked(state, seatId, payload, deps = {}) {
   ensureState(state);
+  const initialHandIndex = getPayloadHandIndex(payload);
+  manaTrace(deps, "handleHandCardClicked.enter", {
+    ...getPlayerTrace(state, seatId, U.getPlayer(state, seatId)),
+    hand_index: initialHandIndex,
+    payload
+  });
 
   const turn = validateTurnAction(state, seatId);
   if (!turn.ok) {
+    manaTrace(deps, "handleHandCardClicked.rejected", {
+      ...getPlayerTrace(state, seatId, U.getPlayer(state, seatId)),
+      hand_index: initialHandIndex,
+      validate_ok: false,
+      reject_reason: turn.message
+    });
     return { ok: false, state, message: turn.message };
   }
 
@@ -508,19 +799,56 @@ function handleHandCardClicked(state, seatId, payload, deps = {}) {
 
   const player = U.getPlayer(state, seatId);
   if (!player) {
+    manaTrace(deps, "handleHandCardClicked.rejected", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: initialHandIndex,
+      validate_ok: false,
+      reject_reason: "Player is missing."
+    });
     return { ok: false, state, message: "Player is missing." };
   }
 
   const handIndex = getPayloadHandIndex(payload);
   if (handIndex < 0 || handIndex >= player.hand.length) {
+    manaTrace(deps, "handleHandCardClicked.rejected", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: handIndex,
+      player_mana: Number(player.mana || 0),
+      validate_ok: false,
+      reject_reason: "Invalid hand index."
+    });
     return { ok: false, state, message: "Invalid hand index." };
   }
 
   const card = player.hand[handIndex];
   S.normalizeCard(card);
 
-  const playCheck = validateCanPlayCard(state, seatId, player, card);
+  manaTrace(deps, "handleHandCardClicked.card", {
+    ...getPlayerTrace(state, seatId, player),
+    hand_index: handIndex,
+    raw_card: getCardTrace(card),
+    hydrated_card: {
+      ...getCardTrace(card),
+      effective_cost: CardOps.getCardPlayCost(player, card)
+    },
+    player_mana: Number(player.mana || 0),
+    effective_cost: CardOps.getCardPlayCost(player, card)
+  });
+
+  const playCheck = validateCanPlayCard(state, seatId, player, card, {
+    handIndex,
+    traceDeps: deps
+  });
   if (!playCheck.ok) {
+    manaTrace(deps, "handleHandCardClicked.rejected", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: handIndex,
+      player_mana: Number(player.mana || 0),
+      effective_cost: CardOps.getCardPlayCost(player, card),
+      validate_ok: false,
+      reject_reason: playCheck.message,
+      board_added: false
+    });
     return { ok: false, state, message: playCheck.message };
   }
 
@@ -532,9 +860,24 @@ function handleHandCardClicked(state, seatId, payload, deps = {}) {
   if (needsTarget) {
     setPendingCardTarget(state, seatId, handIndex, card);
     S.syncLegacy(state);
+    manaTrace(deps, "handleHandCardClicked.pending_target", {
+      ...getPlayerTrace(state, seatId, player),
+      hand_index: handIndex,
+      player_mana: Number(player.mana || 0),
+      effective_cost: CardOps.getCardPlayCost(player, card),
+      validate_ok: true,
+      board_added: false
+    });
     return { ok: true, state };
   }
 
+  manaTrace(deps, "handleHandCardClicked.playCardFromHand", {
+    ...getPlayerTrace(state, seatId, player),
+    hand_index: handIndex,
+    player_mana: Number(player.mana || 0),
+    effective_cost: CardOps.getCardPlayCost(player, card),
+    validate_ok: true
+  });
   return playCardFromHand(state, seatId, handIndex, null, deps);
 }
 
