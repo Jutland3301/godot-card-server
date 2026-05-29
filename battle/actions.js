@@ -8,7 +8,7 @@ const Combat = require("./combat");
 const Effects = require("./effects");
 const Targets = require("./targets");
 const Triggers = require("./triggers");
-const Cards = require("./cards_database");
+const Cards = require("../cards_database");
 
 function ensureState(state) {
   S.normalizeState(state);
