@@ -21,7 +21,9 @@ const STARTING_MANA = 0;
 const TURN_TIME_LIMIT_SECONDS = 45.0;
 const MAX_HAND_SIZE = 7;
 const MATCH_TIMER_TICK_MS = 250;
-const MATCH_RECONNECT_GRACE_MS = Number(process.env.MATCH_RECONNECT_GRACE_MS || 120000);
+const MATCH_RECONNECT_GRACE_MS = Number(process.env.MATCH_RECONNECT_GRACE_MS || 20000);
+const CLIENT_LIVENESS_TIMEOUT_MS = Number(process.env.CLIENT_LIVENESS_TIMEOUT_MS || 10000);
+const CLIENT_LIVENESS_CHECK_MS = Number(process.env.CLIENT_LIVENESS_CHECK_MS || 3000);
 const SERVER_COMMIT =
   process.env.RENDER_GIT_COMMIT ||
   process.env.COMMIT_SHA ||
@@ -1145,21 +1147,75 @@ function isSeatConnected(match, seatId) {
   return Boolean(client && client.ws && client.ws.readyState === WebSocket.OPEN);
 }
 
-function hasExpiredDisconnectedSeat(match, now) {
-  if (!match || !match.seats) {
+function markSeatDisconnected(matchId, seatId, reason = "connection_lost") {
+  const match = matches.get(matchId);
+
+  if (!match || !match.seats || !match.seats[seatId]) {
     return false;
+  }
+
+  if (match.state && match.state.game_over) {
+    return false;
+  }
+
+  const seat = match.seats[seatId];
+
+  if (seat.disconnected) {
+    return false;
+  }
+
+  seat.disconnected = true;
+  seat.disconnected_at = Date.now();
+  seat.disconnect_reason = reason;
+
+  console.log(
+    "[DISCONNECT] seat marked disconnected",
+    matchId,
+    "seat=",
+    seatId,
+    "reason=",
+    reason,
+    "grace_ms=",
+    MATCH_RECONNECT_GRACE_MS
+  );
+
+  const otherSeatId = seatId === "A" ? "B" : "A";
+  const otherSeat = match.seats[otherSeatId];
+
+  if (otherSeat) {
+    const otherClient = clients.get(otherSeat.client_id);
+    if (otherClient && otherClient.ws) {
+      safeSend(otherClient.ws, {
+        type: "opponent_connection_lost",
+        match_id: matchId,
+        message: "Opponent connection was lost. Waiting for reconnect..."
+      });
+    }
+  }
+
+  return true;
+}
+
+function getExpiredDisconnectedSeatId(match, now) {
+  if (!match || !match.seats) {
+    return "";
   }
 
   for (const seatId of ["A", "B"]) {
     const seat = match.seats[seatId];
-    if (seat && seat.disconnected && Number(seat.disconnected_at || 0) > 0) {
-      if (now - Number(seat.disconnected_at) >= MATCH_RECONNECT_GRACE_MS) {
-        return true;
-      }
+
+    if (!seat || !seat.disconnected) {
+      continue;
+    }
+
+    const disconnectedAt = Number(seat.disconnected_at || 0);
+
+    if (disconnectedAt > 0 && now - disconnectedAt >= MATCH_RECONNECT_GRACE_MS) {
+      return seatId;
     }
   }
 
-  return false;
+  return "";
 }
 
 function sendMatchFound(matchId) {
@@ -1398,21 +1454,11 @@ function tickMatchTimers() {
         continue;
       }
 
-      if (hasExpiredDisconnectedSeat(match, now)) {
-        for (const seatId of ["A", "B"]) {
-          if (isSeatConnected(match, seatId)) {
-            const client = clients.get(match.seats[seatId].client_id);
-            safeSend(client.ws, {
-              type: "opponent_left",
-              match_id: matchId,
-              message: "Opponent did not reconnect in time."
-            });
-          }
-        }
-        destroyMatch(matchId, "Reconnection grace period expired.");
+      const expiredSeatId = getExpiredDisconnectedSeatId(match, now);
+      if (expiredSeatId) {
+        finalizeDisconnectWin(matchId, expiredSeatId, "reconnect_timeout");
         continue;
       }
-
       if (!isSeatConnected(match, "A") && !isSeatConnected(match, "B")) {
         match.last_timer_update_at = now;
         continue;
@@ -1496,6 +1542,123 @@ function tickMatchTimers() {
   }
 }
 
+function tickClientLiveness() {
+  const now = Date.now();
+
+  for (const [clientId, client] of clients.entries()) {
+    if (!client || client.role !== "client") {
+      continue;
+    }
+
+    if (!client.ws || client.ws.readyState !== WebSocket.OPEN) {
+      continue;
+    }
+
+    const lastSeenAt = Number(client.last_seen_at || client.connected_at || now);
+    const staleMs = now - lastSeenAt;
+
+    if (staleMs < CLIENT_LIVENESS_TIMEOUT_MS) {
+      continue;
+    }
+
+    console.log(
+      "[DISCONNECT] heartbeat stale",
+      clientId,
+      "stale_ms=",
+      staleMs,
+      "match=",
+      client.match_id || "",
+      "seat=",
+      client.seat_id || ""
+    );
+
+    if (client.match_id && client.seat_id) {
+      markSeatDisconnected(client.match_id, client.seat_id, "heartbeat_timeout");
+    } else {
+      removeClientFromQueue(clientId);
+    }
+
+    try {
+      client.ws.terminate();
+    } catch (_error) {
+      // Ignore termination errors.
+    }
+  }
+}
+
+function finalizeDisconnectWin(matchId, disconnectedSeatId, reason = "reconnect_timeout") {
+  const match = matches.get(matchId);
+
+  if (!match || !match.state || !match.seats) {
+    return false;
+  }
+
+  if (match.finalized || match.state.game_over) {
+    console.log("[DISCONNECT] finalize skipped; already ended", matchId, "reason=", reason);
+    return false;
+  }
+
+  if (disconnectedSeatId !== "A" && disconnectedSeatId !== "B") {
+    return false;
+  }
+
+  const winnerSeatId = disconnectedSeatId === "A" ? "B" : "A";
+  const winnerSeat = match.seats[winnerSeatId];
+
+  match.finalized = true;
+  match.state = normalizeAuthoritativeState(match.state);
+  match.state.game_over = true;
+  match.state.winner_seat = winnerSeatId;
+  match.state.loser_seat = disconnectedSeatId;
+  match.state.status_message = "Opponent did not reconnect. You win.";
+  match.state.turn_timer_active = false;
+  match.state.turn_timer_timeout_handled = true;
+
+  if (Array.isArray(match.state.battle_log_messages)) {
+    match.state.battle_log_messages.push("Opponent did not reconnect. " + winnerSeatId + " wins.");
+  }
+
+  if (Array.isArray(match.state.log)) {
+    match.state.log.push("Opponent did not reconnect. " + winnerSeatId + " wins.");
+  }
+
+  const publicState = getPublicBattleState(match);
+  const winnerClient = winnerSeat ? clients.get(winnerSeat.client_id) : null;
+
+  if (winnerClient && winnerClient.ws) {
+    safeSend(winnerClient.ws, {
+      type: "match_state",
+      match_id: matchId,
+      seat_id: winnerSeatId,
+      state: publicState
+    });
+
+    safeSend(winnerClient.ws, {
+      type: "opponent_left",
+      match_id: matchId,
+      result: "win",
+      reason,
+      winner_seat: winnerSeatId,
+      loser_seat: disconnectedSeatId,
+      message: "Opponent did not reconnect. You win."
+    });
+  }
+
+  console.log(
+    "[DISCONNECT] opponent win finalized",
+    matchId,
+    "winner=",
+    winnerSeatId,
+    "loser=",
+    disconnectedSeatId,
+    "reason=",
+    reason
+  );
+
+  destroyMatch(matchId, "Match finished by disconnect reconnect timeout.");
+  return true;
+}
+
 function destroyMatch(matchId, reason = "Match destroyed.") {
   const match = matches.get(matchId);
 
@@ -1529,6 +1692,7 @@ function destroyMatch(matchId, reason = "Match destroyed.") {
 // WebSocket
 // ============================================================================
 async function handleClientMessage(client, message) {
+  client.last_seen_at = Date.now();
   const type = String(message.type || "");
 
   switch (type) {
@@ -1870,38 +2034,8 @@ function handleDisconnect(connection) {
 
     removeClientFromQueue(client.client_id);
 
-    if (client.match_id) {
-      const match = matches.get(client.match_id);
-
-      if (match) {
-        const seatId = client.seat_id;
-        const otherSeatId = seatId === "A" ? "B" : "A";
-        const otherSeat = match.seats[otherSeatId];
-
-        if (seatId && match.seats[seatId]) {
-          match.seats[seatId].disconnected = true;
-          match.seats[seatId].disconnected_at = Date.now();
-        }
-
-        console.log(
-          "[MATCH] client disconnected but match kept temporarily",
-          match.match_id,
-          "seat=",
-          seatId
-        );
-
-        if (otherSeat) {
-          const otherClient = clients.get(otherSeat.client_id);
-
-          if (otherClient && otherClient.ws) {
-            safeSend(otherClient.ws, {
-              type: "opponent_connection_lost",
-              match_id: match.match_id,
-              message: "Opponent connection was lost."
-            });
-          }
-        }
-      }
+    if (client.match_id && client.seat_id) {
+      markSeatDisconnected(client.match_id, client.seat_id, "socket_close");
     }
 
     clients.delete(client.client_id);
@@ -1918,146 +2052,8 @@ function handleDisconnect(connection) {
   console.log("[WS] disconnected unknown connection");
 }
 
-wss.on("connection", (ws, req) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const role = url.searchParams.get("role") || "client";
-
-  if (role === "host") {
-    const hostId = makeId("host", nextHostNumber++);
-
-    const host = {
-      role: "host",
-      ws,
-      host_id: hostId,
-      ready: false,
-      capacity: 1,
-      current_match_id: ""
-    };
-
-    hosts.set(hostId, host);
-
-    console.log("[HOST] connected but unused in Node authoritative mode", hostId);
-
-    safeSend(ws, {
-      type: "host_welcome",
-      host_id: hostId,
-      mode: "node_authoritative"
-    });
-
-    ws.on("message", (data) => {
-      try {
-        const text = data.toString();
-        const message = safeParse(text);
-
-        if (!message) {
-          console.log("[HOST] invalid JSON from", hostId, "raw=", text);
-          return;
-        }
-
-        console.log("[HOST MESSAGE]", hostId, JSON.stringify(message));
-        handleHostMessage(host, message);
-      } catch (error) {
-        console.error("[HOST MESSAGE ERROR]", hostId);
-        console.error(error && error.stack ? error.stack : error);
-      }
-    });
-
-    ws.on("close", (code, reason) => {
-      console.log(
-        "[HOST] socket close",
-        hostId,
-        "code=",
-        code,
-        "reason=",
-        reason ? reason.toString() : ""
-      );
-
-      handleDisconnect(host);
-    });
-
-    ws.on("error", (error) => {
-      console.error("[HOST] socket error", hostId, error && error.stack ? error.stack : error);
-    });
-
-    return;
-  }
-
-  const clientId = makeId("client", nextClientNumber++);
-
-  const client = {
-    role: "client",
-    ws,
-    client_id: clientId,
-    user_id: 0,
-    username: "",
-    display_name: "",
-    is_authenticated: false,
-    queued: false,
-    match_id: "",
-    seat_id: ""
-  };
-
-  clients.set(clientId, client);
-
-  console.log("[CLIENT] connected", clientId);
-
-  safeSend(ws, {
-    type: "welcome",
-    client_id: clientId
-  });
-
-  ws.on("message", (data) => {
-    try {
-      const text = data.toString();
-      const message = safeParse(text);
-
-      if (!message) {
-        console.log("[CLIENT] invalid JSON from", clientId, "raw=", text);
-        sendError(ws, "Invalid JSON.");
-        return;
-      }
-
-      console.log("[CLIENT MESSAGE]", clientId, "type=", String(message.type || ""));
-      console.log("[MANA_TRACE]", "server.ws_message.received", JSON.stringify({
-        version: String(packageInfo.version || ""),
-        commit: SERVER_COMMIT,
-        client_id: clientId,
-        message_type: String(message.type || ""),
-        action_type: String(message.action || ""),
-        match_id: String(message.match_id || ""),
-        seat_id: String(message.seat_id || "")
-      }));
-      Promise.resolve(handleClientMessage(client, message)).catch((error) => {
-        console.error("[CLIENT MESSAGE ERROR]", clientId);
-        console.error(error && error.stack ? error.stack : error);
-        sendError(ws, "Server failed while handling client message.");
-      });
-    } catch (error) {
-      console.error("[CLIENT MESSAGE ERROR]", clientId);
-      console.error(error && error.stack ? error.stack : error);
-      sendError(ws, "Server failed while handling client message.");
-    }
-  });
-
-  ws.on("close", (code, reason) => {
-    console.log(
-      "[CLIENT] socket close",
-      clientId,
-      "code=",
-      code,
-      "reason=",
-      reason ? reason.toString() : ""
-    );
-
-    handleDisconnect(client);
-  });
-
-  ws.on("error", (error) => {
-    console.error("[CLIENT] socket error", clientId, error && error.stack ? error.stack : error);
-  });
-});
-
 setInterval(tickMatchTimers, MATCH_TIMER_TICK_MS);
+setInterval(tickClientLiveness, CLIENT_LIVENESS_CHECK_MS);
 
 async function startServer() {
   if (pool) {
