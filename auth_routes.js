@@ -37,6 +37,7 @@ function createAuthRoutes({ authService, readJsonBody, sendJson }) {
         ok: true,
         user: result.user,
         token: result.token,
+        gold: result.user.gold,
         tutorial_completed: result.user.tutorial_completed
       });
     } catch (error) {
@@ -53,10 +54,18 @@ function createAuthRoutes({ authService, readJsonBody, sendJson }) {
 
     try {
       const result = await authService.login(body);
+      console.log("[PROGRESSION_TRACE] login.http_response", JSON.stringify({
+        user_id: result.user.id,
+        username: result.user.username,
+        user_gold: result.user.gold,
+        top_level_gold: result.user.gold,
+        response_includes_gold: Object.prototype.hasOwnProperty.call(result.user, "gold")
+      }));
       sendJson(res, 200, {
         ok: true,
         user: result.user,
         token: result.token,
+        gold: result.user.gold,
         tutorial_completed: result.user.tutorial_completed
       });
     } catch (error) {
@@ -79,6 +88,7 @@ function createAuthRoutes({ authService, readJsonBody, sendJson }) {
     sendJson(res, 200, {
       ok: true,
       user,
+      gold: user.gold,
       tutorial_completed: user.tutorial_completed
     });
   }

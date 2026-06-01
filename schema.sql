@@ -4,6 +4,10 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   display_name TEXT NOT NULL,
   tutorial_completed BOOLEAN NOT NULL DEFAULT FALSE,
+  gold INTEGER NOT NULL DEFAULT 1000,
+  role TEXT NOT NULL DEFAULT 'normal',
+  is_developer BOOLEAN NOT NULL DEFAULT FALSE,
+  account_type TEXT NOT NULL DEFAULT 'normal',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -23,7 +27,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_user_sessions_token_hash ON user_sessions(
 CREATE TABLE IF NOT EXISTS cards (
   card_id TEXT PRIMARY KEY,
   side TEXT NOT NULL DEFAULT 'neutral',
-  rarity TEXT NOT NULL DEFAULT 'common',
+  rarity TEXT NOT NULL DEFAULT 'silver',
   enabled BOOLEAN NOT NULL DEFAULT TRUE
 );
 
@@ -66,11 +70,18 @@ CREATE TABLE IF NOT EXISTS pack_results (
 
 CREATE TABLE IF NOT EXISTS rank_profiles (
   user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  rating INTEGER NOT NULL DEFAULT 1000,
-  rank_points INTEGER NOT NULL DEFAULT 0,
+  rating INTEGER NOT NULL DEFAULT 1500,
+  rank_points INTEGER NOT NULL DEFAULT 1500,
   wins INTEGER NOT NULL DEFAULT 0,
   losses INTEGER NOT NULL DEFAULT 0,
-  draws INTEGER NOT NULL DEFAULT 0
+  draws INTEGER NOT NULL DEFAULT 0,
+  current_rank TEXT NOT NULL DEFAULT 'Platinum',
+  win_streak INTEGER NOT NULL DEFAULT 0,
+  current_season_id TEXT NOT NULL DEFAULT '',
+  highest_rating_this_season INTEGER NOT NULL DEFAULT 1500,
+  highest_rank_this_season TEXT NOT NULL DEFAULT 'Platinum',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS match_logs (
@@ -80,12 +91,41 @@ CREATE TABLE IF NOT EXISTS match_logs (
   winner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   loser_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   result TEXT NOT NULL DEFAULT 'unknown',
+  match_type TEXT NOT NULL DEFAULT 'casual',
+  ended_reason TEXT NOT NULL DEFAULT 'normal',
+  started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ended_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  player1_side TEXT,
+  player2_side TEXT,
+  winner_rating_before INTEGER,
+  winner_rating_after INTEGER,
+  loser_rating_before INTEGER,
+  loser_rating_after INTEGER,
+  winner_rank_before TEXT,
+  winner_rank_after TEXT,
+  loser_rank_before TEXT,
+  loser_rank_after TEXT,
+  external_match_id TEXT UNIQUE,
+  reward_gold INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS rank_season_history (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  season_id TEXT NOT NULL,
+  final_rating INTEGER NOT NULL,
+  final_rank TEXT NOT NULL,
+  highest_rating INTEGER NOT NULL,
+  highest_rank TEXT NOT NULL,
+  wins INTEGER NOT NULL,
+  losses INTEGER NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, season_id)
+);
+
 INSERT INTO cards (card_id, side, rarity, enabled) VALUES
-('test_human_001', 'human', 'common', TRUE),
-('test_human_002', 'human', 'common', TRUE),
-('test_god_001', 'god', 'common', TRUE),
-('test_neutral_001', 'neutral', 'common', TRUE)
+('test_human_001', 'human', 'silver', TRUE),
+('test_human_002', 'human', 'silver', TRUE),
+('test_god_001', 'god', 'silver', TRUE),
+('test_neutral_001', 'neutral', 'silver', TRUE)
 ON CONFLICT (card_id) DO NOTHING;

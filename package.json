@@ -4,7 +4,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node tests/leader_attack_smoke.js && node tests/card_selection_smoke.js && node tests/coin_flip_smoke.js"
+    "test": "node tests/leader_attack_smoke.js && node tests/card_selection_smoke.js && node tests/coin_flip_smoke.js && node tests/god_card_hydration_smoke.js && node tests/cost_payment_smoke.js && node tests/progression_catalog_smoke.js && node tests/registration_progression_smoke.js && node tests/progression_sync_smoke.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

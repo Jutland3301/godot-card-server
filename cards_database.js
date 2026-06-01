@@ -2,6 +2,55 @@ const fs = require("fs");
 const path = require("path");
 
 const CARD_LIBRARY_PATH = process.env.CARD_LIBRARY_PATH || path.join(__dirname, "CardLibrary.gd");
+const CARD_RARITY_NORMAL = "normal";
+const CARD_RARITY_SILVER = "silver";
+const CARD_RARITY_GOLD = "gold";
+const CARD_RARITY_AMETHYST = "amethyst";
+const CARD_RARITY_LEGEND = "legend";
+const PACK_RARITY_WEIGHTS = Object.freeze({
+  [CARD_RARITY_SILVER]: 60,
+  [CARD_RARITY_GOLD]: 25,
+  [CARD_RARITY_AMETHYST]: 12,
+  [CARD_RARITY_LEGEND]: 3
+});
+const NORMAL_CARD_IDS = Object.freeze([
+  "slash", "heal", "fireball", "insight", "Novice Soldier", "guardian",
+  "swift_raider", "stone_wall_guard", "quick_blade"
+]);
+const GOLD_CARD_IDS = Object.freeze([
+  "holy_missiles", "hap_hazard", "circus_of_illusion", "glacial_world",
+  "absolute_loyalty", "paint_barrel", "lamentation_of_life", "the_duel_on_sea",
+  "storm_and_tides", "royal_strategist", "musketeer", "magician_in_red",
+  "mystic_elder", "witchcraft_trap", "the_bastion", "obsidian_harp",
+  "the_beloved_cannoneer", "hugin_crow_of_thought", "muninn_crow_of_memory",
+  "the_sane_saint", "rogue_smith", "convivial_humming", "one_eye_albatross",
+  "nobles_oblige", "book_of_rushwater", "all_knowing_archivist",
+  "introduction_to_armory", "headhunter", "helmet_helmsman", "mecha_juggernaut",
+  "raise_the_anchor", "the_hieroglyphic_scribe", "the_forbidden_music_box",
+  "bell_ringer_of_silence", "bride_beneath_the_veil", "cerberus_gatehound",
+  "grave_counting_angel", "maw_of_the_reliquary", "relic_moth", "saintbone_clerk",
+  "the_believer_of_souls", "the_friendly_curse", "the_unpaid_prayer"
+]);
+const AMETHYST_CARD_IDS = Object.freeze([
+  "natures_decision", "the_arcana_tales", "tiny_commander", "pyromancer",
+  "angelic_singer", "rogue_songwriter", "the_first_oracle",
+  "guardian_of_the_seventh_gate", "flying_fortress", "wooden_mecha",
+  "forbidden_book", "monochro_blueprint", "economics_overflow",
+  "the_captain_on_fire", "the_overworking_engineer", "fenrir_bound_wolf",
+  "king_of_empty_graves", "name_scratcher", "omen_taxman", "phoenix_ashling",
+  "relic_of_final_shelter", "the_acolyte_of_dreams", "the_last_haunting"
+]);
+const LEGEND_CARD_IDS = Object.freeze([
+  "masterwork_of_art", "the_rime_of_the_ancient_mariner", "the_undefeated_general",
+  "the_tale_of_bravery", "the_prophet", "eigenspirits", "the_legendary_builder",
+  "jormungandr_world_serpent", "prophecy_ouroboros", "relic_of_the_end",
+  "the_godless_testament"
+]);
+const RARITY_BY_CARD_ID = new Map();
+for (const cardId of NORMAL_CARD_IDS) RARITY_BY_CARD_ID.set(cardId, CARD_RARITY_NORMAL);
+for (const cardId of GOLD_CARD_IDS) RARITY_BY_CARD_ID.set(cardId, CARD_RARITY_GOLD);
+for (const cardId of AMETHYST_CARD_IDS) RARITY_BY_CARD_ID.set(cardId, CARD_RARITY_AMETHYST);
+for (const cardId of LEGEND_CARD_IDS) RARITY_BY_CARD_ID.set(cardId, CARD_RARITY_LEGEND);
 
 const CONSTANTS = {
   CARD_TYPE_SPELL: "spell",
@@ -40,6 +89,10 @@ const CONSTANTS = {
   EFFECT_BUFF_ALL_ALLY_UNITS: "buff_all_ally_units",
   EFFECT_POETRY_OF_RESILIENCE: "poetry_of_resilience",
   EFFECT_CONVIVIAL_HUMMING: "convivial_humming",
+  EFFECT_RAISE_THE_ANCHOR: "raise_the_anchor",
+  EFFECT_SYMPHONIC_ILLUSION: "symphonic_illusion",
+  EFFECT_THE_TALE_OF_BRAVERY: "the_tale_of_bravery",
+  EFFECT_PROPHECY_OUROBOROS: "prophecy_ouroboros",
   EFFECT_NOBLES_OBLIGE: "nobles_oblige",
   EFFECT_ECONOMICS_OVERFLOW: "economics_overflow",
   EFFECT_HUMBLE_LIBRARIAN: "humble_librarian",
@@ -372,11 +425,13 @@ function normalizeCardDefinition(cardId, rawData) {
     name: String(data.name || cardId || ""),
     type: cardType,
     cost: Number(data.cost || 0),
+    base_cost: Number(data.cost || 0),
     power: Number(data.power || 0),
     effect_id: String(data.effect_id || "none"),
     target_type: String(data.target_type || "none"),
     description: String(data.description || ""),
     side: String(data.side || "human"),
+    rarity: getCardRarity(cardId),
     image_path: String(data.image_path || ""),
 
     attack,
@@ -432,7 +487,7 @@ function reloadCardDatabase() {
 }
 
 function getCardDefinition(cardId) {
-  const cleanCardId = String(cardId || "").trim();
+  const cleanCardId = resolveCardId(cardId);
   const database = getCardDatabase();
 
   if (!Object.prototype.hasOwnProperty.call(database, cleanCardId)) {
@@ -442,61 +497,98 @@ function getCardDefinition(cardId) {
   return database[cleanCardId];
 }
 
+function resolveCardId(rawCardId) {
+  const cleanCardId = String(rawCardId || "").trim();
+  const database = getCardDatabase();
+
+  if (!cleanCardId) {
+    return "";
+  }
+
+  if (Object.prototype.hasOwnProperty.call(database, cleanCardId)) {
+    return cleanCardId;
+  }
+
+  const lowerId = cleanCardId.toLowerCase();
+  for (const cardId of Object.keys(database)) {
+    if (cardId.toLowerCase() === lowerId) {
+      return cardId;
+    }
+  }
+
+  let snakeId = lowerId
+    .replace(/['",!?]/g, "")
+    .replace(/[-/:.]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\s/g, "_");
+
+  if (Object.prototype.hasOwnProperty.call(database, snakeId)) {
+    return snakeId;
+  }
+
+  for (const [cardId, data] of Object.entries(database)) {
+    if (String(data.name || cardId).toLowerCase() === lowerId) {
+      return cardId;
+    }
+  }
+
+  return cleanCardId;
+}
+
 function hasCardDefinition(cardId) {
   return getCardDefinition(cardId) !== null;
 }
 
+function isDeckBuildableCard(cardId) {
+  const data = getCardDefinition(cardId);
+
+  if (!data) {
+    return false;
+  }
+
+  const tags = normalizeStringArray(data.tags).map((tag) => tag.toLowerCase());
+  return !tags.includes("token");
+}
+
 function getAvailableCardIds() {
-  return Object.keys(getCardDatabase());
+  return Object.keys(getCardDatabase()).filter((cardId) => isDeckBuildableCard(cardId));
+}
+
+function getCardRarity(cardId) {
+  return RARITY_BY_CARD_ID.get(String(cardId || "")) || CARD_RARITY_SILVER;
+}
+
+function getPackEligibleCardIds(rarity = "") {
+  return getAvailableCardIds().filter((cardId) => {
+    const cardRarity = getCardRarity(cardId);
+    return cardRarity !== CARD_RARITY_NORMAL && (!rarity || cardRarity === rarity);
+  });
+}
+
+function choosePackCardId(randomValue = Math.random()) {
+  const roll = Math.max(0, Math.min(0.999999999, Number(randomValue) || 0)) * 100;
+  let cursor = 0;
+  let chosenRarity = CARD_RARITY_SILVER;
+  for (const [rarity, weight] of Object.entries(PACK_RARITY_WEIGHTS)) {
+    cursor += weight;
+    if (roll < cursor) {
+      chosenRarity = rarity;
+      break;
+    }
+  }
+  const candidates = getPackEligibleCardIds(chosenRarity);
+  if (candidates.length <= 0) return "";
+  return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
 function makeCardFromId(cardId) {
-  const cleanCardId = String(cardId || "").trim();
+  const cleanCardId = resolveCardId(cardId);
   const data = getCardDefinition(cleanCardId);
 
   if (!data) {
     console.log("[CARD DB] Unknown card_id:", cleanCardId);
-
-    return {
-      card_id: cleanCardId,
-      card_name: cleanCardId,
-      display_name: cleanCardId,
-      cost: 0,
-      power: 0,
-      card_type: "unit",
-      target_type: "none",
-      effect_id: "none",
-      trigger_id: "none",
-      description: "",
-
-      attack: 0,
-      hp: 1,
-      max_hp: 1,
-      armor: 0,
-      base_attack: 0,
-      base_hp: 1,
-
-      side: "neutral",
-      traits: [],
-      keywords: [],
-      tags: [],
-      abilities: [],
-
-      can_attack: false,
-      exhausted: true,
-      summoned_this_turn: false,
-      has_attacked_this_turn: false,
-      attacks_this_turn: 0,
-      max_attacks_per_turn: 1,
-
-      temporary_keywords: {},
-      once_per_turn_flags: {},
-
-      attack_sfx: "",
-      defense_sfx: "",
-      play_sfx: "",
-      death_sfx: ""
-    };
+    return null;
   }
 
   const attack = Number(data.attack || 0);
@@ -507,12 +599,14 @@ function makeCardFromId(cardId) {
     card_name: String(data.name || cleanCardId),
     display_name: String(data.name || cleanCardId),
     cost: Number(data.cost || 0),
+    base_cost: Number(data.base_cost || data.cost || 0),
     power: Number(data.power || 0),
     card_type: String(data.type || "spell"),
     target_type: String(data.target_type || "none"),
     effect_id: String(data.effect_id || "none"),
     trigger_id: String(data.trigger_id || "none"),
     description: String(data.description || ""),
+    rarity: getCardRarity(cleanCardId),
 
     attack,
     hp,
@@ -550,8 +644,15 @@ module.exports = {
   getCardDatabase,
   reloadCardDatabase,
   getCardDefinition,
+  resolveCardId,
   hasCardDefinition,
+  isDeckBuildableCard,
   getAvailableCardIds,
+  getCardRarity,
+  getPackEligibleCardIds,
+  choosePackCardId,
+  NORMAL_CARD_IDS,
+  PACK_RARITY_WEIGHTS,
   makeCardFromId,
   loadCardDatabaseFromFile
 };

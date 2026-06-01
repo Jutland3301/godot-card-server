@@ -336,6 +336,7 @@ function copyCardData(originalCard) {
   copied.card_name = String(copied.card_name || copied.name || copied.card_id || "");
   copied.card_type = String(copied.card_type || C.CARD_TYPE_SPELL);
   copied.cost = Number(copied.cost || 0);
+  copied.base_cost = Number(copied.base_cost ?? copied.cost ?? 0);
   copied.power = Number(copied.power || 0);
   copied.effect_id = String(copied.effect_id || C.EFFECT_NONE);
   copied.target_type = String(copied.target_type || C.TARGET_NONE);
@@ -358,7 +359,7 @@ function copyCardData(originalCard) {
   copied.cannot_attack_leader = Boolean(copied.cannot_attack_leader || false);
   copied.flying_fortress_prevent_used_this_turn = false;
 
-  copied.rarity = String(copied.rarity || "common");
+  copied.rarity = String(copied.rarity || "silver");
   copied.tags = ensureArray(copied.tags).map(String);
   copied.keywords = ensureArray(copied.keywords).map(normalizeLowerString).filter(Boolean);
   copied.traits = ensureArray(copied.traits).map(normalizeLowerString).filter(Boolean);

@@ -48,19 +48,20 @@ function getTargetPlayer(state, target) {
   return Targets.getPlayerByTarget(state, target);
 }
 
-function beginHandSelection(state, sourceSeat, effectId, sourceCard, candidateIndexes, message, sourceZone = "hand") {
+function beginHandSelection(state, sourceSeat, effectId, sourceCard, candidateIndexes, message, sourceZone = "hand", selectionOwnerSeat = sourceSeat, pendingAbility = {}) {
   state.selecting_hand_card = true;
   state.selecting_target = false;
   state.pending_action_type = C.ACTION_HAND_SELECTION;
   state.pending_hand_selection_effect = String(effectId || "");
   state.pending_hand_selection_owner = U.seatToOwnerId(sourceSeat);
+  state.pending_card_selection_owner = U.seatToOwnerId(selectionOwnerSeat);
   state.pending_card_selection_zone = sourceZone === "graveyard" ? "graveyard" : "hand";
   state.pending_card_owner = U.seatToOwnerId(sourceSeat);
-  state.pending_card = U.copyCardData(sourceCard);
+  state.pending_card = sourceCard;
   state.pending_hand_candidate_indexes = Array.isArray(candidateIndexes)
     ? candidateIndexes.map(index => Number(index)).filter(index => Number.isFinite(index))
     : [];
-  state.pending_ability = {};
+  state.pending_ability = U.deepClone(pendingAbility || {});
   state.pending_attacker_index = -1;
   state.selected_attacker_owner = "";
   state.selected_attacker_index = -1;
@@ -76,6 +77,7 @@ function clearHandSelection(state) {
   state.selecting_hand_card = false;
   state.pending_hand_selection_effect = "";
   state.pending_hand_selection_owner = "";
+  state.pending_card_selection_owner = "";
   state.pending_card_selection_zone = "hand";
   state.pending_hand_candidate_indexes = [];
   state.pending_action_type = C.ACTION_NONE;
@@ -130,8 +132,9 @@ function resolveHandSelection(state, sourceSeat, handIndex, ctx = {}) {
     return { ok: false, state, message: "This hand selection belongs to another player." };
   }
 
-  const player = U.getPlayer(state, sourceSeat);
-  if (!player) {
+  const selectionOwnerSeat = U.normalizeOwnerToSeat(state, state.pending_card_selection_owner || state.pending_hand_selection_owner);
+  const selectionOwner = U.getPlayer(state, selectionOwnerSeat);
+  if (!selectionOwner) {
     clearHandSelection(state);
     return { ok: false, state, message: "Player is missing." };
   }
@@ -146,11 +149,13 @@ function resolveHandSelection(state, sourceSeat, handIndex, ctx = {}) {
   }
 
   const sourceZone = state.pending_card_selection_zone === "graveyard" ? "graveyard" : "hand";
-  const sourceCards = sourceZone === "graveyard" ? player.graveyard : player.hand;
+  const sourceCards = sourceZone === "graveyard" ? selectionOwner.graveyard : selectionOwner.hand;
   const sourceIndex = candidates[selectionIndex];
   const sourceCard = state.pending_card || null;
   const selectedCard = sourceCards[sourceIndex] || null;
   const effect = String(state.pending_hand_selection_effect || "");
+  const pendingAbility = U.deepClone(state.pending_ability || {});
+  let shouldFinishSpell = true;
 
   if (!sourceCard || !selectedCard) {
     clearHandSelection(state);
@@ -186,12 +191,66 @@ function resolveHandSelection(state, sourceSeat, handIndex, ctx = {}) {
       resolveTarnishedBookshelfSelectedCard(state, sourceSeat, sourceCard, selectedCard, ctx);
       break;
 
+    case C.EFFECT_RETURN_RANDOM_HAND_UNIT_DRAW_ANOTHER_TRAIT_UNIT:
+      resolveReturnHandUnitDrawAnotherTraitUnitSelectedCard(state, sourceSeat, sourceCard, selectedCard);
+      break;
+
+    case "ratatoskr_choose_bottom_hand":
+      resolveRatatoskrBottomHandSelectedCard(state, sourceSeat, sourceCard, selectedCard);
+      shouldFinishSpell = false;
+      break;
+
+    case "the_last_confession":
+      resolveTheLastConfessionSelectedCard(state, selectionOwnerSeat, sourceCard, selectedCard);
+      break;
+
+    case "the_hieroglyphic_scribe":
+      resolveHieroglyphicScribeSelectedCard(state, sourceSeat, sourceCard, selectedCard, ctx);
+      shouldFinishSpell = false;
+      break;
+
+    case "crystal_ball":
+      resolveCrystalBallSelectedCard(state, sourceSeat, sourceCard, selectedCard);
+      shouldFinishSpell = false;
+      break;
+
+    case "lone_knight_buff_hand_trait":
+      resolveBuffSelectedHandCard(state, sourceCard, selectedCard, pendingAbility);
+      shouldFinishSpell = false;
+      break;
+
+    case "spellblader_burn_spell":
+      resolveBurnSelectedSpellAndBuffSelf(state, sourceSeat, sourceCard, selectedCard, pendingAbility);
+      shouldFinishSpell = false;
+      break;
+
+    case "witchcraft_trap_return_hand_trait":
+      resolveReturnSelectedHandTraitCardAndDamageAllEnemies(state, sourceSeat, sourceCard, selectedCard, pendingAbility, ctx);
+      shouldFinishSpell = false;
+      break;
+
+    case "candle_bearer_curse_enemy_hand":
+      resolveCurseSelectedEnemyHandCard(state, sourceCard, selectedCard, pendingAbility);
+      shouldFinishSpell = false;
+      break;
+
+    case "relic_undertaker_tax_enemy_hand":
+      resolveTaxSelectedEnemyHandCard(state, sourceCard, selectedCard, pendingAbility);
+      shouldFinishSpell = false;
+      break;
+
     default:
       addLog(state, `Unsupported hand selection effect: ${effect}.`);
       break;
   }
 
-  finishPendingSpellAfterHandSelection(state, sourceSeat, sourceCard, ctx);
+  if (shouldFinishSpell) {
+    finishPendingSpellAfterHandSelection(state, sourceSeat, sourceCard, ctx);
+  } else {
+    clearHandSelection(state);
+    Combat.processDeathQueue(state, ctx);
+    S.syncLegacy(state);
+  }
 
   return { ok: true, state };
 }
@@ -386,6 +445,29 @@ function applyEffectToTarget(state, sourceSeat, sourceCard, target, ability = {}
       return { ok: true, pending: false };
     }
 
+    case C.EFFECT_RAISE_THE_ANCHOR: {
+      if (!target || target.type !== "unit") {
+        return { ok: false, pending: false, message: "Invalid Raise the Anchor target." };
+      }
+      const unit = getTargetUnit(state, target);
+      if (!unit) return { ok: false, pending: false, message: "Raise the Anchor target is missing." };
+      unit.abilities = U.ensureArray(unit.abilities);
+      unit.abilities.push({ trigger: C.TRIGGER_TURN_END, effect: "destroy_self_once" });
+      addLog(state, `${U.cardName(unit)} will be destroyed at the end of its owner's turn.`);
+      return { ok: true, pending: false };
+    }
+
+    case C.EFFECT_THE_TALE_OF_BRAVERY: {
+      if (!target || target.type !== "unit") {
+        return { ok: false, pending: false, message: "Invalid Tale of Bravery target." };
+      }
+      const unit = getTargetUnit(state, target);
+      if (!unit) return { ok: false, pending: false, message: "Tale of Bravery target is missing." };
+      U.addKeyword(unit, C.KEYWORD_RUSH);
+      addLog(state, `${U.cardName(unit)} gained Rush.`);
+      return { ok: true, pending: false };
+    }
+
     default:
       return { ok: false, pending: false, message: `Unsupported targeted effect: ${effectId}.` };
   }
@@ -453,8 +535,7 @@ function resolveSpellOrCardEffect(state, sourceSeat, sourceCard, target = null, 
       return { ok: true, pending: false };
 
     case C.EFFECT_RETURN_RANDOM_HAND_UNIT_DRAW_ANOTHER_TRAIT_UNIT:
-      resolveReturnRandomHandUnitDrawAnotherTraitUnit(state, sourceSeat, sourceCard);
-      return { ok: true, pending: false };
+      return resolveReturnRandomHandUnitDrawAnotherTraitUnit(state, sourceSeat, sourceCard);
 
     case C.EFFECT_MASTERWORK_OF_ART:
       resolveMasterworkOfArt(state, sourceSeat, sourceCard, ctx);
@@ -479,6 +560,9 @@ function resolveSpellOrCardEffect(state, sourceSeat, sourceCard, target = null, 
     case "the_last_haunting":
       resolveTheLastHaunting(state, sourceSeat, sourceCard);
       return { ok: true, pending: false };
+
+    case "the_last_confession":
+      return resolveTheLastConfession(state, sourceSeat, sourceCard);
 
     case C.EFFECT_INCANTATION_OF_MINSTREL:
       return resolveIncantationOfMinstrel(state, sourceSeat, sourceCard);
@@ -513,6 +597,16 @@ function resolveSpellOrCardEffect(state, sourceSeat, sourceCard, target = null, 
 
     case C.EFFECT_CONVIVIAL_HUMMING:
       resolveConvivialHumming(state, sourceSeat, sourceCard, ctx);
+      return { ok: true, pending: false };
+
+    case C.EFFECT_SYMPHONIC_ILLUSION:
+      resolveSymphonicIllusion(state, sourceSeat, sourceCard, ctx);
+      return { ok: true, pending: false };
+
+    case C.EFFECT_PROPHECY_OUROBOROS:
+      player.prophecy_ouroboros_active = true;
+      player.prophet_zero_cost_used_this_turn = true;
+      addLog(state, `${U.cardName(sourceCard)} made each turn's first Prophet card cost 0.`);
       return { ok: true, pending: false };
 
     case C.EFFECT_ECONOMICS_OVERFLOW:
@@ -727,47 +821,95 @@ function resolveTemporaryImmobileAllEnemyUnits(state, sourceSeat, sourceCard) {
 
 function resolveReturnRandomHandUnitDrawAnotherTraitUnit(state, sourceSeat, sourceCard) {
   const player = U.getPlayer(state, sourceSeat);
-  if (!player) return;
+  if (!player) return { ok: true, pending: false };
 
-  const returnCandidates = [];
-
-  for (let i = 0; i < player.hand.length; i++) {
-    const card = player.hand[i];
-    if (card && U.isUnit(card)) {
-      returnCandidates.push(i);
-    }
-  }
+  const returnCandidates = getCandidateIndexesByPredicate(player, card => {
+    return U.isUnit(card) && hasAnotherTraitUnitInDeck(player, card);
+  });
 
   if (returnCandidates.length <= 0) {
-    addLog(state, `${U.cardName(sourceCard)} found no unit in hand to return.`);
-    return;
+    addLog(state, `${U.cardName(sourceCard)} found no unit in hand that could draw a unit with another trait.`);
+    return { ok: true, pending: false };
   }
 
-  const selectedHandIndex = returnCandidates[U.randomInt(returnCandidates.length)];
-  const returnedCard = player.hand.splice(selectedHandIndex, 1)[0];
+  return beginHandSelection(state, sourceSeat, C.EFFECT_RETURN_RANDOM_HAND_UNIT_DRAW_ANOTHER_TRAIT_UNIT, sourceCard, returnCandidates, "Choose a unit in your hand to return to your deck.");
+}
+
+function resolveBuffSelectedHandCard(state, sourceCard, selectedCard, ability = {}) {
+  const attackBonus = Number(ability.attack || 0);
+  const hpBonus = Number(ability.hp || 0);
+  U.buffCardStats(selectedCard, attackBonus, hpBonus);
+  addLog(state, `${U.cardName(sourceCard)} gave ${U.cardName(selectedCard)} +${attackBonus}/+${hpBonus}.`);
+}
+
+function resolveBurnSelectedSpellAndBuffSelf(state, sourceSeat, sourceCard, selectedCard, ability = {}) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner || !U.isSpell(selectedCard)) return;
+  const selectedIndex = owner.hand.indexOf(selectedCard);
+  if (selectedIndex < 0) return;
+  owner.hand.splice(selectedIndex, 1);
+  owner.graveyard.push(selectedCard);
+  const attackBonus = Number(ability.attack || 0);
+  const hpBonus = Number(ability.hp || 0);
+  U.buffCardStats(sourceCard, attackBonus, hpBonus);
+  addLog(state, `${U.cardName(sourceCard)} burned ${U.cardName(selectedCard)} and gained +${attackBonus}/+${hpBonus}.`);
+}
+
+function resolveReturnSelectedHandTraitCardAndDamageAllEnemies(state, sourceSeat, sourceCard, selectedCard, ability = {}, ctx = {}) {
+  const owner = U.getPlayer(state, sourceSeat);
+  const traitName = U.normalizeLowerString(ability.trait || "gadget");
+  if (!owner || !U.hasTrait(selectedCard, traitName)) return;
+  const selectedIndex = owner.hand.indexOf(selectedCard);
+  if (selectedIndex < 0) return;
+  owner.hand.splice(selectedIndex, 1);
+  owner.deck.push(selectedCard);
+  CardOps.shuffleArray(owner.deck);
+  const damageAmount = Number(ability.amount || 3);
+  const hitCount = Combat.dealDamageToAllEnemyUnitsForPlayer(state, sourceSeat, damageAmount, ctx);
+  addLog(state, `${U.cardName(sourceCard)} returned ${U.cardName(selectedCard)} to deck and dealt ${damageAmount} damage to all enemy units. Hit units: ${hitCount}.`);
+}
+
+function resolveCurseSelectedEnemyHandCard(state, sourceCard, selectedCard, ability = {}) {
+  const amount = Number(ability.amount || 1);
+  selectedCard.cursed_after_play_damage = Number(selectedCard.cursed_after_play_damage || 0) + amount;
+  addLog(state, `${U.cardName(sourceCard)} gave Cursed to ${U.cardName(selectedCard)}.`);
+}
+
+function resolveTaxSelectedEnemyHandCard(state, sourceCard, selectedCard, ability = {}) {
+  const amount = Number(ability.amount || 1);
+  selectedCard.cost = Number(selectedCard.cost || 0) + amount;
+  addLog(state, `${U.cardName(sourceCard)} increased ${U.cardName(selectedCard)}'s cost by ${amount}.`);
+}
+
+function hasAnotherTraitUnitInDeck(player, returnedCard) {
+  if (!player || !returnedCard) return false;
   const returnedTraits = U.ensureArray(returnedCard.traits).map(U.normalizeLowerString);
 
+  return U.ensureArray(player.deck).some(deckCard => {
+    return deckCard && U.isUnit(deckCard) && U.ensureArray(deckCard.traits).some(traitValue => {
+      const trait = U.normalizeLowerString(traitValue);
+      return trait && !returnedTraits.includes(trait);
+    });
+  });
+}
+
+function resolveReturnHandUnitDrawAnotherTraitUnitSelectedCard(state, sourceSeat, sourceCard, returnedCard) {
+  const player = U.getPlayer(state, sourceSeat);
+  if (!player || !returnedCard || !player.hand.includes(returnedCard) || !U.isUnit(returnedCard)) return;
+  if (!hasAnotherTraitUnitInDeck(player, returnedCard)) return;
+
+  player.hand.splice(player.hand.indexOf(returnedCard), 1);
+  const returnedTraits = U.ensureArray(returnedCard.traits).map(U.normalizeLowerString);
   player.deck.push(returnedCard);
   CardOps.shuffleArray(player.deck);
-
   const deckCandidates = [];
-
   for (let i = 0; i < player.deck.length; i++) {
     const deckCard = player.deck[i];
     if (!deckCard || !U.isUnit(deckCard)) continue;
-
-    let hasAnotherTrait = false;
-    for (const traitValue of U.ensureArray(deckCard.traits)) {
+    if (U.ensureArray(deckCard.traits).some(traitValue => {
       const trait = U.normalizeLowerString(traitValue);
-      if (trait && !returnedTraits.includes(trait)) {
-        hasAnotherTrait = true;
-        break;
-      }
-    }
-
-    if (hasAnotherTrait) {
-      deckCandidates.push(i);
-    }
+      return trait && !returnedTraits.includes(trait);
+    })) deckCandidates.push(i);
   }
 
   if (deckCandidates.length <= 0) {
@@ -789,6 +931,20 @@ function resolveReturnRandomHandUnitDrawAnotherTraitUnit(state, sourceSeat, sour
 
   player.hand.push(drawnCard);
   addLog(state, `${U.cardName(sourceCard)} returned ${U.cardName(returnedCard)} and drew ${U.cardName(drawnCard)}. It gained +2/+2 and costs 1 less.`);
+}
+
+function resolveRatatoskrHandSelection(state, sourceSeat, sourceCard) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner || owner.hand.length <= 0) return { ok: true, pending: false };
+  return beginHandSelection(state, sourceSeat, "ratatoskr_choose_bottom_hand", sourceCard, owner.hand.map((_card, index) => index), "Choose a card in your hand to put on the bottom of your deck.");
+}
+
+function resolveRatatoskrBottomHandSelectedCard(state, sourceSeat, sourceCard, selectedCard) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner || !selectedCard || !owner.hand.includes(selectedCard)) return;
+  owner.hand.splice(owner.hand.indexOf(selectedCard), 1);
+  owner.deck.unshift(selectedCard);
+  addLog(state, `${U.cardName(sourceCard)} put ${U.cardName(selectedCard)} on the bottom of its owner's deck.`);
 }
 
 function resolveMasterworkOfArt(state, sourceSeat, sourceCard, ctx = {}) {
@@ -1015,6 +1171,24 @@ function resolveConvivialHumming(state, sourceSeat, sourceCard, ctx = {}) {
 
   const hitCount = Combat.dealDamageToAllEnemyUnitsForPlayer(state, sourceSeat, damageAmount, ctx);
   addLog(state, `${U.cardName(sourceCard)} dealt ${damageAmount} damage to all enemy units. Hit units: ${hitCount}.`);
+}
+
+function resolveSymphonicIllusion(state, sourceSeat, sourceCard, ctx = {}) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner) return;
+
+  const summoned =
+    Combat.summonCard(state, sourceSeat, "gig_drummer", 1, ctx) +
+    Combat.summonCard(state, sourceSeat, "marching_trumpeter", 1, ctx);
+  let buffed = 0;
+
+  for (const unit of U.ensureArray(owner.board)) {
+    if (!unit || !U.isUnit(unit) || !U.hasTrait(unit, "music")) continue;
+    U.buffCardStats(unit, 0, 1);
+    buffed++;
+  }
+
+  addLog(state, `${U.cardName(sourceCard)} summoned ${summoned} unit(s) and gave ${buffed} allied Music unit(s) +0/+1.`);
 }
 
 function resolveEconomicsOverflow(state, sourceSeat, sourceCard) {
@@ -1620,6 +1794,92 @@ function resolveTarnishedBookshelfSelectedCard(state, sourceSeat, sourceCard, se
   addLog(state, `${U.cardName(sourceCard)} added 4 copies of ${U.cardName(selectedCard)} to deck.`);
 }
 
+function resolveHieroglyphicScribe(state, sourceSeat, sourceCard) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner) return { ok: true, pending: false };
+  if (owner.board.length >= C.MAX_BOARD_SIZE) {
+    addLog(state, `${U.cardName(sourceCard)} found no room to resurrect a Scribe.`);
+    return { ok: true, pending: false };
+  }
+
+  const candidates = getCandidateIndexesByPredicate(
+    owner,
+    card => U.isUnit(card) && (U.hasTrait(card, "scribe") || U.cardName(card).toLowerCase().includes("scribe")),
+    "graveyard"
+  );
+
+  if (candidates.length <= 0) {
+    addLog(state, `${U.cardName(sourceCard)} found no Scribe unit in graveyard.`);
+    return { ok: true, pending: false };
+  }
+
+  return beginHandSelection(state, sourceSeat, "the_hieroglyphic_scribe", sourceCard, candidates, "Choose a Scribe unit to resurrect.", "graveyard");
+}
+
+function resolveHieroglyphicScribeSelectedCard(state, sourceSeat, sourceCard, selectedCard) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner || !selectedCard || !owner.graveyard.includes(selectedCard)) return;
+  if (owner.board.length >= C.MAX_BOARD_SIZE) {
+    addLog(state, `${U.cardName(sourceCard)} found no room to resurrect ${U.cardName(selectedCard)}.`);
+    return;
+  }
+
+  owner.graveyard.splice(owner.graveyard.indexOf(selectedCard), 1);
+  selectedCard.hp = selectedCard.max_hp;
+  selectedCard.temporary_keywords = {};
+  Combat.applySummonState(selectedCard, owner);
+  owner.board.push(selectedCard);
+  addLog(state, `${U.cardName(sourceCard)} resurrected ${U.cardName(selectedCard)}.`);
+}
+
+function resolveCrystalBall(state, sourceSeat, sourceCard) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner) return { ok: true, pending: false };
+  const candidates = getCandidateIndexesByPredicate(owner, card => U.hasTrait(card, "prophet"), "hand");
+  if (candidates.length <= 0) {
+    addLog(state, `${U.cardName(sourceCard)} found no Prophet card in hand.`);
+    return { ok: true, pending: false };
+  }
+  return beginHandSelection(state, sourceSeat, "crystal_ball", sourceCard, candidates, "Choose a Prophet card to burn.", "hand");
+}
+
+function resolveCrystalBallSelectedCard(state, sourceSeat, sourceCard, selectedCard) {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner || !selectedCard || !owner.hand.includes(selectedCard)) return;
+  const bonus = Number(selectedCard.cost || 0);
+  const boardSource = owner.board.slice().reverse().find(card => U.cardId(card) === U.cardId(sourceCard)) || sourceCard;
+  owner.hand.splice(owner.hand.indexOf(selectedCard), 1);
+  owner.graveyard.push(selectedCard);
+  U.buffCardStats(boardSource, bonus, bonus);
+  addLog(state, `${U.cardName(boardSource)} burned ${U.cardName(selectedCard)} and gained +${bonus}/+${bonus}.`);
+}
+
+function resolveTheLastConfession(state, sourceSeat, sourceCard) {
+  const enemySeat = U.otherSeat(sourceSeat);
+  const enemy = U.getPlayer(state, enemySeat);
+  if (!enemy || enemy.hand.length <= 0) {
+    addLog(state, `${U.cardName(sourceCard)} found no enemy card.`);
+    return { ok: true, pending: false };
+  }
+  return beginHandSelection(
+    state,
+    sourceSeat,
+    "the_last_confession",
+    sourceCard,
+    enemy.hand.map((_card, index) => index),
+    "Choose an enemy card to burden.",
+    "hand",
+    enemySeat
+  );
+}
+
+function resolveTheLastConfessionSelectedCard(state, enemySeat, sourceCard, selectedCard) {
+  const enemy = U.getPlayer(state, enemySeat);
+  if (!enemy || !selectedCard || !enemy.hand.includes(selectedCard)) return;
+  selectedCard.cost = Number(selectedCard.cost || 0) + 3;
+  addLog(state, `${U.cardName(sourceCard)} increased ${U.cardName(selectedCard)}'s cost by 3.`);
+}
+
 
 module.exports = {
   getAmount,
@@ -1641,6 +1901,7 @@ module.exports = {
   resolveResurrectTraitUnitsFromGraveyard,
   resolveTemporaryImmobileAllEnemyUnits,
   resolveReturnRandomHandUnitDrawAnotherTraitUnit,
+  resolveRatatoskrHandSelection,
   resolveMasterworkOfArt,
   resolveDivineMenagerie,
   resolveCallOfTheWildGods,
@@ -1653,6 +1914,7 @@ module.exports = {
   resolveCallOfOmen,
   resolveBuffAllAllyUnits,
   resolveConvivialHumming,
+  resolveSymphonicIllusion,
   resolveEconomicsOverflow,
   resolveMonochroBlueprint,
   resolveBookOfRushwater,
@@ -1667,6 +1929,8 @@ module.exports = {
   resolveNoblesOblige,
   resolveForbiddenBook,
   resolveTranscribeOfTheWicked,
+  resolveHieroglyphicScribe,
+  resolveCrystalBall,
 
   resolveIncantationOfMinstrel,
   resolveLightningCeremony,

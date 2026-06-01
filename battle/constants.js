@@ -2,7 +2,7 @@
 
 const STARTING_HP = 30;
 const STARTING_HAND_SIZE = 3;
-const MAX_HAND_SIZE = 7;
+const MAX_HAND_SIZE = 9;
 const MAX_BOARD_SIZE = 5;
 const MAX_MANA = 10;
 const MANA_GAIN_PER_TURN = 1;
@@ -55,6 +55,10 @@ const EFFECT_CALL_OF_OMEN = "call_of_omen";
 const EFFECT_BUFF_ALL_ALLY_UNITS = "buff_all_ally_units";
 const EFFECT_POETRY_OF_RESILIENCE = "poetry_of_resilience";
 const EFFECT_CONVIVIAL_HUMMING = "convivial_humming";
+const EFFECT_RAISE_THE_ANCHOR = "raise_the_anchor";
+const EFFECT_SYMPHONIC_ILLUSION = "symphonic_illusion";
+const EFFECT_THE_TALE_OF_BRAVERY = "the_tale_of_bravery";
+const EFFECT_PROPHECY_OUROBOROS = "prophecy_ouroboros";
 
 const EFFECT_NOBLES_OBLIGE = "nobles_oblige";
 const EFFECT_ECONOMICS_OVERFLOW = "economics_overflow";
@@ -221,6 +225,10 @@ module.exports = {
   EFFECT_BUFF_ALL_ALLY_UNITS,
   EFFECT_POETRY_OF_RESILIENCE,
   EFFECT_CONVIVIAL_HUMMING,
+  EFFECT_RAISE_THE_ANCHOR,
+  EFFECT_SYMPHONIC_ILLUSION,
+  EFFECT_THE_TALE_OF_BRAVERY,
+  EFFECT_PROPHECY_OUROBOROS,
 
   EFFECT_NOBLES_OBLIGE,
   EFFECT_ECONOMICS_OVERFLOW,

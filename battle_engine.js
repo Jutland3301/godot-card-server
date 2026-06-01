@@ -16,6 +16,15 @@ function normalizeStateRuntime(state) {
   return state;
 }
 
+function normalizeStateWithDeps(state, deps = {}) {
+  State.normalizeState(state);
+  if (deps && typeof deps.makeCardFromId === "function" && typeof State.hydrateKnownCardDefinitions === "function") {
+    State.hydrateKnownCardDefinitions(state, deps.makeCardFromId);
+  }
+  State.syncLegacy(state);
+  return state;
+}
+
 function makePublicState(state) {
   if (!state || typeof state !== "object") {
     return {};
@@ -44,8 +53,7 @@ function handleBattleAction(match, seatId, payload, deps = {}) {
     match.state = {};
   }
 
-  State.normalizeState(match.state);
-  State.syncLegacy(match.state);
+  normalizeStateWithDeps(match.state, deps);
 
   const result = Actions.handleBattleAction(
     match,
@@ -54,8 +62,7 @@ function handleBattleAction(match, seatId, payload, deps = {}) {
     deps || {}
   );
 
-  State.normalizeState(match.state);
-  State.syncLegacy(match.state);
+  normalizeStateWithDeps(match.state, deps);
 
   return {
     ok: result && result.ok === true,
@@ -87,9 +94,9 @@ function drawCard(state, seatId, amount = 1) {
 }
 
 function playHandCard(state, seatId, handIndex, target = null, deps = {}) {
-  State.normalizeState(state);
+  normalizeStateWithDeps(state, deps);
   const result = Actions.playCardFromHand(state, seatId, handIndex, target, deps);
-  State.syncLegacy(state);
+  normalizeStateWithDeps(state, deps);
   return result;
 }
 

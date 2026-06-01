@@ -3,6 +3,7 @@
 const C = require("./constants");
 const U = require("./utils");
 const S = require("./state");
+const Costs = require("./costs");
 
 function drawOne(state, seatId) {
   const player = U.getPlayer(state, seatId);
@@ -51,31 +52,6 @@ function drawCards(state, seatId, amount) {
   }
 
   return drawn;
-}
-
-function burnRandomCardFromHand(state, seatId, predicate = null) {
-  const player = U.getPlayer(state, seatId);
-  if (!player || !Array.isArray(player.hand) || player.hand.length <= 0) {
-    return null;
-  }
-
-  if (!Array.isArray(player.graveyard)) {
-    player.graveyard = [];
-  }
-
-  const index = U.findRandomIndex(player.hand, (card) => {
-    if (!predicate) return true;
-    return predicate(card);
-  });
-
-  if (index < 0) return null;
-
-  const card = player.hand.splice(index, 1)[0];
-  if (card) {
-    player.graveyard.push(card);
-  }
-
-  return card || null;
 }
 
 function drawRandomFromDeck(state, seatId, predicate = null) {
@@ -251,19 +227,7 @@ function gainMana(player, amount) {
 }
 
 function getPlayedTraitCount(player, traitName) {
-  if (!player) return 0;
-
-  const trait = U.normalizeLowerString(traitName);
-
-  if (trait === "scholar") {
-    return Number(player.scholar_cards_played_this_game || player.scholar_played_count || 0);
-  }
-
-  if (!player.played_trait_counts || typeof player.played_trait_counts !== "object") {
-    return 0;
-  }
-
-  return Number(player.played_trait_counts[trait] || 0);
+  return Costs.getPlayedTraitCount(player, traitName);
 }
 
 function incrementPlayedTraitCounts(player, card) {
@@ -287,36 +251,14 @@ function incrementPlayedTraitCounts(player, card) {
 }
 
 function getCardPlayCost(player, card) {
-  if (!player || !card) return 0;
-
-  let cost = U.getEffectiveCardCost(card, player);
-
-  const cardId = U.cardId(card);
-
-  if (cardId === C.EFFECT_FORBIDDEN_BOOK || String(card.effect_id || "") === C.EFFECT_FORBIDDEN_BOOK) {
-    cost -= getPlayedTraitCount(player, "scholar");
-  }
-
-  if (cardId === C.EFFECT_ALL_KNOWING_ARCHIVIST || String(card.effect_id || "") === C.EFFECT_ALL_KNOWING_ARCHIVIST) {
-    cost += getPlayedTraitCount(player, "scholar");
-    cost = Math.min(cost, 10);
-  }
-
-  if (cardId === "fenrir_bound_wolf") {
-    cost -= Number(player.animal_deaths_this_game || 0);
-  }
-
-  if (U.isUnit(card) && Number(player.inflation_counters || 0) > 0) {
-    cost += 1;
-  }
-
-  return Math.max(0, Number(cost || 0));
+  return Costs.getCardPlayCost(player, card);
 }
 
 function applyPlayCostPostEffects(player, card) {
   if (!player || !card) return;
 
-  if (U.isUnit(card) && Number(player.inflation_counters || 0) > 0) {
+  if (U.isUnit(card) && Number(player.inflation_counters || 0) > 0 && Number(player.mana || 0) >= 1) {
+    player.mana = Number(player.mana || 0) - 1;
     player.inflation_counters = Math.max(0, Number(player.inflation_counters || 0) - 1);
 
     card.attack = Number(card.attack || 0) + 2;
@@ -505,7 +447,6 @@ function findCardIndexInBoard(player, card) {
 module.exports = {
   drawOne,
   drawCards,
-  burnRandomCardFromHand,
   drawRandomFromDeck,
   drawRandomSpellFromDeck,
   drawRandomTraitCardFromDeck,
