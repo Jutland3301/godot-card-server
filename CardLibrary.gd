@@ -37,6 +37,10 @@ const EFFECT_CALL_OF_OMEN := "call_of_omen"
 const EFFECT_BUFF_ALL_ALLY_UNITS := "buff_all_ally_units"
 const EFFECT_POETRY_OF_RESILIENCE := "poetry_of_resilience"
 const EFFECT_CONVIVIAL_HUMMING := "convivial_humming"
+const EFFECT_RAISE_THE_ANCHOR := "raise_the_anchor"
+const EFFECT_SYMPHONIC_ILLUSION := "symphonic_illusion"
+const EFFECT_THE_TALE_OF_BRAVERY := "the_tale_of_bravery"
+const EFFECT_PROPHECY_OUROBOROS := "prophecy_ouroboros"
 
 const TARGET_NONE := "none"
 const TARGET_FRIENDLY_PLAYER := "friendly_player"
@@ -221,7 +225,7 @@ func load_card_database() -> void:
 		"keywords": ["taunt"],
 		"tags": ["basic", "defender"],
 		"traits": ["soldier"],
-		"image_path": "res://Arts/CardImages/StoneWallGuardian.png"
+		"image_path": "res://Arts/CardImages/StoneWallGuard.png"
 	}
 
 	card_database["spark_mage"] = {
@@ -287,7 +291,7 @@ func load_card_database() -> void:
 				"keywords": ["taunt"]
 			}
 		],
-		"image_path": "res://Arts/CardImages/BatallionCaptain.png"
+		"image_path": "res://Arts/CardImages/BattalionCaptain.png"
 	}
 	card_database["tiny_commander"] = {
 		"name": "Tiny Commander",
@@ -377,7 +381,7 @@ func load_card_database() -> void:
 		"power": 0,
 		"effect_id": EFFECT_NONE,
 		"target_type": TARGET_NONE,
-		"description": "Whenever another Soldier is played, draw a card.",
+		"description": "Once per turn, whenever another Soldier is played, draw a card.",
 		"attack": 1,
 		"hp": 3,
 		"armor": 0,
@@ -391,7 +395,8 @@ func load_card_database() -> void:
 				"trait": "soldier",
 				"amount": 1,
 				"include_self": false,
-				"only_friendly": true
+				"only_friendly": true,
+				"once_per_turn": true
 			}
 		],
 		"image_path": "res://Arts/CardImages/RoyalStrategist.png"
@@ -510,7 +515,7 @@ func load_card_database() -> void:
 		"power": 0,
 		"effect_id": EFFECT_NONE,
 		"target_type": TARGET_NONE,
-		"description": "When destroyed: Give a random Soldier unit in your hand +1/+1.",
+		"description": "When destroyed: Choose a Soldier unit in your hand. Give it +1/+1.",
 		"attack": 1,
 		"hp": 1,
 		"armor": 0,
@@ -661,7 +666,7 @@ func load_card_database() -> void:
 		"power": 0,
 		"effect_id": EFFECT_NONE,
 		"target_type": TARGET_NONE,
-		"description": "When played: If possible, burn a random spell in your hand and gain +2/+3.",
+		"description": "When played: If possible, choose and burn a spell in your hand. Gain +2/+3.",
 		"attack": 3,
 		"hp": 3,
 		"armor": 0,
@@ -711,7 +716,7 @@ func load_card_database() -> void:
 		"armor": 0,
 		"keywords": [],
 		"tags": ["basic", "battlecry", "late_game", "deck_generator"],
-		"traits": [],
+		"traits": ["prophet"],
 		"side": CARD_SIDE_GOD,
 		"abilities": [
 			{
@@ -738,7 +743,7 @@ func load_card_database() -> void:
 		"armor": 0,
 		"keywords": [],
 		"tags": ["token", "spell", "ruin", "deck_generator", "max_hp_damage"],
-		"traits": [],
+		"traits": ["prophet"],
 		"side": CARD_SIDE_GOD,
 		"abilities": [
 			{
@@ -843,7 +848,7 @@ func load_card_database() -> void:
 	card_database["magus_imagination"] = {
 		"name": "Magus Imagination",
 		"type": CARD_TYPE_SPELL,
-		"cost": 0,
+		"cost": 1,
 		"power": 2,
 		"effect_id": EFFECT_DRAW_RANDOM_TRAIT_FROM_DECK_INCREASE_COST,
 		"target_type": TARGET_NONE,
@@ -1074,7 +1079,7 @@ func load_card_database() -> void:
 		"power": 0,
 		"effect_id": EFFECT_NONE,
 		"target_type": TARGET_NONE,
-		"description": "Music. Taunt. When played: Destroy an enemy unit and heal your leader for 4.",
+		"description": "Music. Taunt. When played: Choose and destroy an enemy unit, then heal your leader for 4.",
 		"attack": 2,
 		"hp": 7,
 		"armor": 0,
@@ -1453,7 +1458,7 @@ func load_card_database() -> void:
 		"power": 0,
 		"effect_id": EFFECT_NONE,
 		"target_type": TARGET_NONE,
-		"description": "Gadget. Immobile. Turn End: If possible, return a random Gadget card in your hand to your deck: Deal 3 damage to all enemy units.",
+		"description": "Gadget. Immobile. Turn End: If possible, choose a Gadget card in your hand and return it to your deck: Deal 3 damage to all enemy units.",
 		"attack": 2,
 		"hp": 5,
 		"armor": 0,
@@ -1478,7 +1483,7 @@ func load_card_database() -> void:
 		"power": 0,
 		"effect_id": EFFECT_RETURN_RANDOM_HAND_UNIT_DRAW_ANOTHER_TRAIT_UNIT,
 		"target_type": TARGET_NONE,
-		"description": "Return a random unit in your hand to your deck. Draw a random unit with another trait from your deck. It gains +2/+2 and costs 1 less.",
+		"description": "Choose a unit in your hand and return it to your deck. Draw a random unit with another trait from your deck. It gains +2/+2 and costs 1 less.",
 		"attack": 0,
 		"hp": 0,
 		"armor": 0,
@@ -1978,8 +1983,8 @@ func load_card_database() -> void:
 		"hp": 2,
 		"armor": 0,
 		"keywords": [],
-		"tags": ["basic", "god", "saint", "battlecry", "summon"],
-		"traits": ["saint"],
+		"tags": ["basic", "god","saint", "battlecry", "summon"],
+		"traits": ["prophet"],
 		"side": CARD_SIDE_GOD,
 		"abilities": [
 			{
@@ -2256,7 +2261,7 @@ func load_card_database() -> void:
 	"power": 0,
 	"effect_id": "economics_overflow",
 	"target_type": TARGET_NONE,
-	"description": "Add 4 Inflation Counters. While you have an Inflation Counter, your units cost 1 more. Whenever you play a unit, consume 1 Inflation Counter and that unit gains +2/+1.",
+	"description": "Add 4 Inflation Counters. After you play a unit, if you can pay 1 additional mana, consume 1 Inflation Counter and that unit gains +2/+1.",
 	"attack": 0,
 	"hp": 0,
 	"armor": 0,
@@ -2467,9 +2472,9 @@ func load_card_database() -> void:
 
 	card_database["ratatoskr_root_messenger"] = {
 		"name": "Ratatoskr, Root Messenger", "type": CARD_TYPE_UNIT, "cost": 1, "attack": 1, "hp": 1,
-		"description": "When played: Draw a card. Then put a random card from your hand on the bottom of your deck.",
+		"description": "When played: Draw a card. Then choose a card from your hand and put it on the bottom of your deck.",
 		"traits": ["animal"], "side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/RatatoskrRootMessenger.png",
-		"abilities": [{"trigger": "battlecry", "effect": "draw_then_bottom_random_hand"}]
+		"abilities": [{"trigger": "battlecry", "effect": "draw_then_choose_bottom_hand"}]
 	}
 	card_database["sleipnir_eight_legged_steed"] = {
 		"name": "Sleipnir, Eight-Legged Steed", "type": CARD_TYPE_UNIT, "cost": 6, "attack": 4, "hp": 6,
@@ -2534,6 +2539,7 @@ func load_card_database() -> void:
 		"description": "Summon two random Animal units from your deck with cost 4 or less.", "traits": ["animal"], "side": CARD_SIDE_GOD,
 		"image_path": "res://Arts/CardImages/CallOfTheWildGods.png", "abilities": []
 	}
+
 	card_database["wandering_shade"] = {
 		"name": "Wandering Shade", "type": CARD_TYPE_UNIT, "cost": 1, "attack": 1, "hp": 1,
 		"description": "When destroyed: Add a 1/1 Phantom Echo to your graveyard.", "traits": ["phantom"], "side": CARD_SIDE_GOD,
@@ -2598,6 +2604,201 @@ func load_card_database() -> void:
 		"traits": ["phantom"], "side": CARD_SIDE_GOD, "image_path": "res://Arts/CardImages/TheLastHaunting.png", "abilities": []
 	}
 
+	card_database["candle_bearer_acolyte"] = {
+		"name": "Candle-Bearer Acolyte", "type": CARD_TYPE_UNIT, "cost": 1, "attack": 1, "hp": 1,
+		"description": "Relic. When played: Choose a card in the enemy hand and give it Cursed. After it is played, its owner takes 1 damage.",
+		"traits": ["relic"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "battlecry", "effect": "curse_random_enemy_hand", "amount": 1}]
+	}
+	card_database["ashen_page"] = {
+		"name": "Ashen Page", "type": CARD_TYPE_UNIT, "cost": 1, "attack": 1, "hp": 1,
+		"description": "Relic. When played: If a Relic is in your graveyard, draw a card and deal 1 damage to your leader.",
+		"traits": ["relic"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "battlecry", "effect": "draw_if_graveyard_has_trait_and_damage_leader", "trait": "relic", "draw": 1, "damage": 1}]
+	}
+	card_database["beggar_of_blessings"] = {
+		"name": "Beggar of Blessings", "type": CARD_TYPE_UNIT, "cost": 4, "attack": 1, "hp": 4,
+		"description": "Relic. Taunt. After an enemy unit attacks this, its death deals 2 damage to its owner's leader.",
+		"keywords": ["taunt"], "traits": ["relic"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "when_attacked", "effect": "give_attacker_death_damage_owner_leader", "amount": 2}]
+	}
+	card_database["name_scratcher"] = {
+		"name": "Name-Scratcher", "type": CARD_TYPE_UNIT, "cost": 2, "attack": 1, "hp": 3,
+		"description": "When played: Choose a card name from the enemy graveyard. The next enemy card with that name costs 2 more.",
+		"traits": [], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "battlecry", "effect": "name_scratcher"}]
+	}
+	card_database["the_unpaid_prayer"] = {
+		"name": "The Unpaid Prayer", "type": CARD_TYPE_SPELL, "cost": 2, "effect_id": "the_unpaid_prayer", "target_type": TARGET_NONE,
+		"description": "During the enemy's next turn, after their first card, they lose 1 mana or take 3 damage.",
+		"traits": [], "side": CARD_SIDE_GOD, "abilities": []
+	}
+	card_database["relic_moth"] = {
+		"name": "Relic Moth", "type": CARD_TYPE_UNIT, "cost": 4, "attack": 3, "hp": 1,
+		"description": "Relic. Animal. Haste. When played: Give Cursed to all enemy units. After they attack, their owner takes 1 damage.",
+		"keywords": ["haste"], "traits": ["relic", "animal"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "battlecry", "effect": "curse_all_enemy_units", "amount": 1}]
+	}
+	card_database["the_kneeling_idol"] = {
+		"name": "The Kneeling Idol", "type": CARD_TYPE_UNIT, "cost": 3, "attack": 1, "hp": 5,
+		"description": "Relic. After the enemy plays a spell, this gains +1 ATK.",
+		"traits": ["relic"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "on_spell_played", "effect": "buff_self_attack", "attack": 1, "only_friendly": false, "only_enemy": true}]
+	}
+	card_database["relic_undertaker"] = {
+		"name": "Relic Undertaker", "type": CARD_TYPE_UNIT, "cost": 3, "attack": 2, "hp": 4,
+		"description": "Relic. Whenever an allied Relic is destroyed, choose a card in the enemy hand. It costs 1 more.",
+		"traits": ["relic"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "on_ally_unit_destroyed", "effect": "tax_random_enemy_hand_if_destroyed_trait", "trait": "relic", "amount": 1}]
+	}
+	card_database["bell_ringer_of_silence"] = {
+		"name": "Bell-Ringer of Silence", "type": CARD_TYPE_UNIT, "cost": 3, "attack": 1, "hp": 4,
+		"description": "Relic. After the enemy plays a Battlecry unit, that unit gets -1/-1.",
+		"traits": ["relic"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "on_unit_played", "effect": "debuff_battlecry_unit", "only_enemy": true}]
+	}
+	card_database["saintbone_clerk"] = {
+		"name": "Saintbone Clerk", "type": CARD_TYPE_UNIT, "cost": 3, "attack": 1, "hp": 5,
+		"description": "Relic. Turn Start: If you have 3 or more Relics in your graveyard, deal 2 damage to a random enemy.",
+		"traits": ["relic"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "turn_start", "effect": "damage_random_enemy_if_graveyard_trait_count", "trait": "relic", "required_count": 3, "amount": 2}]
+	}
+	card_database["omen_taxman"] = {
+		"name": "Omen Taxman", "type": CARD_TYPE_UNIT, "cost": 4, "attack": 2, "hp": 5,
+		"description": "Relic. Prophet. When the enemy plays their third card in a turn, deal 6 damage to their leader and destroy this.",
+		"traits": ["relic", "prophet"], "side": CARD_SIDE_GOD, "abilities": []
+	}
+	card_database["the_friendly_curse"] = {
+		"name": "The Friendly Curse", "type": CARD_TYPE_SPELL, "cost": 4, "effect_id": "the_friendly_curse", "target_type": TARGET_ENEMY_UNIT,
+		"description": "Give an enemy unit +2/+2. Its death deals 6 damage to its owner's leader.",
+		"traits": [], "side": CARD_SIDE_GOD, "abilities": []
+	}
+	card_database["contract_of_soft_ruin"] = {
+		"name": "Contract of Soft Ruin", "type": CARD_TYPE_SPELL, "cost": 4, "effect_id": "contract_of_soft_ruin", "target_type": TARGET_NONE,
+		"description": "Give all enemy units -2/-2.", "traits": [], "side": CARD_SIDE_GOD, "abilities": []
+	}
+	card_database["phantom_reliquary"] = {
+		"name": "Phantom Reliquary", "type": CARD_TYPE_UNIT, "cost": 5, "attack": 2, "hp": 5,
+		"description": "Relic. Phantom. Whenever an allied unit is destroyed, give Cursed to a random card in the enemy deck. When drawn, it deals 2 damage to its owner.",
+		"traits": ["relic", "phantom"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "on_ally_unit_destroyed", "effect": "curse_random_enemy_deck_card", "amount": 2}]
+	}
+	card_database["grave_counting_angel"] = {
+		"name": "Grave-Counting Angel", "type": CARD_TYPE_UNIT, "cost": 6, "attack": 3, "hp": 6,
+		"description": "Relic. Turn End: If 5 or more Relics have been destroyed this game, deal 5 damage to a random enemy.",
+		"traits": ["relic"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "turn_end", "effect": "damage_random_enemy_if_relic_destroyed_count", "required_count": 5, "amount": 5}]
+	}
+	card_database["the_last_confession"] = {
+		"name": "The Last Confession", "type": CARD_TYPE_SPELL, "cost": 1, "effect_id": "the_last_confession", "target_type": TARGET_NONE,
+		"description": "Choose a card in the enemy hand. It costs 3 more.",
+		"traits": [], "side": CARD_SIDE_GOD, "abilities": []
+	}
+	card_database["maw_of_the_reliquary"] = {
+		"name": "Maw of the Reliquary", "type": CARD_TYPE_UNIT, "cost": 6, "attack": 5, "hp": 5,
+		"description": "Battlecry: Destroy an allied unit. Deal damage equal to its HP to an enemy unit.",
+		"traits": [], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "battlecry", "effect": "maw_of_the_reliquary"}]
+	}
+	card_database["relic_of_final_shelter"] = {
+		"name": "Relic of Final Shelter", "type": CARD_TYPE_UNIT, "cost": 8, "attack": 3, "hp": 10,
+		"description": "Relic. Untrickable. While this is on board, your leader's HP cannot go below 1.",
+		"keywords": ["untrickable"], "traits": ["relic"], "side": CARD_SIDE_GOD, "abilities": []
+	}
+	card_database["the_godless_testament"] = {
+		"name": "The Godless Testament", "type": CARD_TYPE_UNIT, "cost": 9, "attack": 6, "hp": 9,
+		"description": "Relic. Turn End: If the enemy has 3 or more Cursed cards in hand, deal 9 damage to the enemy leader.",
+		"traits": ["relic"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "turn_end", "effect": "damage_leader_if_enemy_cursed_hand_count", "required_count": 3, "amount": 9}]
+	}
+	card_database["relic_of_the_end"] = {
+		"name": "Relic of the End", "type": CARD_TYPE_SPELL, "cost": 10, "effect_id": "relic_of_the_end", "target_type": TARGET_NONE,
+		"description": "Relic. For each Relic card you played this game, deal 3 damage to a random enemy or the enemy leader.",
+		"traits": ["relic"], "side": CARD_SIDE_GOD, "abilities": []
+	}
+
+	card_database["the_overworking_engineer"] = {
+		"name": "The Overworking Engineer", "type": CARD_TYPE_UNIT, "cost": 5, "attack": 2, "hp": 3,
+		"effect_id": EFFECT_NONE, "target_type": TARGET_NONE,
+		"description": "Turn end: Deal X DMG to the enemy leader. X is the number of Gadget units on your board.",
+		"traits": ["gadget"], "side": CARD_SIDE_HUMAN,
+		"abilities": [{"trigger": "turn_end", "effect": "damage_enemy_leader_by_board_trait_count", "trait": "gadget"}]
+	}
+	card_database["leftover_scraps"] = {
+		"name": "Leftover Scraps", "type": CARD_TYPE_UNIT, "cost": 0, "attack": 1, "hp": 1,
+		"effect_id": EFFECT_NONE, "target_type": TARGET_NONE,
+		"description": "", "traits": ["gadget"], "side": CARD_SIDE_HUMAN, "abilities": []
+	}
+	card_database["mecha_juggernaut"] = {
+		"name": "Mecha-Juggernaut", "type": CARD_TYPE_UNIT, "cost": 7, "attack": 3, "hp": 6,
+		"effect_id": EFFECT_NONE, "target_type": TARGET_NONE,
+		"description": "Armor 1. Taunt. When damaged by an enemy unit: This deals 2 DMG to all enemy units.",
+		"armor": 1, "keywords": ["taunt"], "traits": ["gadget"], "side": CARD_SIDE_HUMAN, "abilities": []
+	}
+	card_database["raise_the_anchor"] = {
+		"name": "Raise the Anchor!", "type": CARD_TYPE_SPELL, "cost": 2, "effect_id": EFFECT_RAISE_THE_ANCHOR, "target_type": TARGET_ENEMY_UNIT,
+		"description": "Select an enemy unit. That unit is granted: \"When your own turn ends: destroy this.\"",
+		"traits": ["marine"], "side": CARD_SIDE_HUMAN, "abilities": []
+	}
+	card_database["helmet_helmsman"] = {
+		"name": "Helmet Helmsman", "type": CARD_TYPE_UNIT, "cost": 1, "attack": 0, "hp": 1,
+		"effect_id": EFFECT_NONE, "target_type": TARGET_NONE,
+		"description": "When played: If you played another Marine card this turn already, this gains +2/+2.",
+		"traits": ["marine"], "side": CARD_SIDE_HUMAN, "abilities": [{"trigger": "battlecry", "effect": "helmet_helmsman"}]
+	}
+	card_database["the_captain_on_fire"] = {
+		"name": "The Captain on Fire", "type": CARD_TYPE_UNIT, "cost": 7, "attack": 2, "hp": 5,
+		"effect_id": EFFECT_NONE, "target_type": TARGET_NONE,
+		"description": "When played: Destroy another unit on the board. Your Marine units have Deadly.",
+		"traits": ["marine"], "side": CARD_SIDE_HUMAN,
+		"abilities": [
+			{"trigger": "battlecry", "effect": "the_captain_on_fire"},
+			{"trigger": "aura", "effect": "grant_keywords_to_trait", "target": "friendly_units_with_trait", "trait": "marine", "keywords": ["deadly"]}
+		]
+	}
+	card_database["symphonic_illusion"] = {
+		"name": "Symphonic Illusion", "type": CARD_TYPE_SPELL, "cost": 5, "effect_id": EFFECT_SYMPHONIC_ILLUSION, "target_type": TARGET_NONE,
+		"description": "Summon a Gig Drummer and Marching Trumpeter on your field. Then all ally Music units gain +1 HP.",
+		"traits": ["music"], "side": CARD_SIDE_HUMAN, "abilities": []
+	}
+	card_database["the_forbidden_music_box"] = {
+		"name": "The Forbidden Music Box", "type": CARD_TYPE_UNIT, "cost": 5, "attack": 4, "hp": 4,
+		"effect_id": EFFECT_NONE, "target_type": TARGET_NONE,
+		"description": "Each once per turn, when an ally Music unit attacks: draw 1 Music unit from your deck. when an ally Music spell is played: draw 1 Music spell from your deck.",
+		"traits": ["music", "gadget"], "side": CARD_SIDE_HUMAN,
+		"abilities": [
+			{"trigger": "on_ally_unit_attack", "effect": "draw_trait_unit_from_deck_once", "trait": "music", "flag": "music_unit_attack"},
+			{"trigger": "on_spell_played", "effect": "draw_trait_spell_from_deck_once", "trait": "music", "flag": "music_spell_played"}
+		]
+	}
+	card_database["the_tale_of_bravery"] = {
+		"name": "The Tale of Bravery", "type": CARD_TYPE_SPELL, "cost": 10, "effect_id": EFFECT_THE_TALE_OF_BRAVERY, "target_type": TARGET_ANY_FRIENDLY,
+		"description": "This spell costs 1 less for each Music card you have played this game. When played: Select an ally unit. That unit has Rush.",
+		"traits": ["music"], "side": CARD_SIDE_HUMAN, "abilities": []
+	}
+	card_database["bookworm"] = {
+		"name": "Bookworm", "type": CARD_TYPE_UNIT, "cost": 1, "attack": 0, "hp": 2,
+		"effect_id": EFFECT_NONE, "target_type": TARGET_NONE,
+		"description": "Turn Start: Draw 2 cards from your deck and destroy this card.",
+		"traits": ["scholar"], "side": CARD_SIDE_HUMAN, "abilities": [{"trigger": "turn_start", "effect": "draw_then_destroy_self", "amount": 2}]
+	}
+	card_database["the_hieroglyphic_scribe"] = {
+		"name": "The Hieroglyphic Scribe", "type": CARD_TYPE_UNIT, "cost": 5, "attack": 3, "hp": 4,
+		"effect_id": EFFECT_NONE, "target_type": TARGET_NONE,
+		"description": "When played: Select and resurrect a Scribe unit from your graveyard.",
+		"traits": ["scholar"], "side": CARD_SIDE_HUMAN, "abilities": [{"trigger": "battlecry", "effect": "the_hieroglyphic_scribe"}]
+	}
+	card_database["crystal_ball"] = {
+		"name": "Crystal Ball", "type": CARD_TYPE_UNIT, "cost": 3, "attack": 3, "hp": 3,
+		"effect_id": EFFECT_NONE, "target_type": TARGET_NONE,
+		"description": "When played: If possible, select and burn a Prophet card in your hand, and this gains +X/+X. X is that burnt card's cost.",
+		"traits": ["prophet"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "battlecry", "effect": "crystal_ball"}]
+	}
+	card_database["the_acolyte_of_dreams"] = {
+		"name": "The Acolyte of Dreams", "type": CARD_TYPE_UNIT, "cost": 7, "attack": 3, "hp": 2,
+		"effect_id": EFFECT_NONE, "target_type": TARGET_NONE,
+		"description": "Rush. When played: All non-Prophet units gain Immobile until the end of next turn.",
+		"keywords": ["rush"], "traits": ["prophet"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "battlecry", "effect": "the_acolyte_of_dreams"}]
+	}
+	card_database["the_believer_of_souls"] = {
+		"name": "The Believer of Souls", "type": CARD_TYPE_UNIT, "cost": 6, "attack": 4, "hp": 5,
+		"effect_id": EFFECT_NONE, "target_type": TARGET_NONE,
+		"description": "Heal X HP to your leader. X is the number of ally units in your graveyard.",
+		"traits": ["prophet", "phantom"], "side": CARD_SIDE_GOD, "abilities": [{"trigger": "battlecry", "effect": "the_believer_of_souls"}]
+	}
+	card_database["prophecy_ouroboros"] = {
+		"name": "Prophecy Ouroboros", "type": CARD_TYPE_SPELL, "cost": 9, "effect_id": EFFECT_PROPHECY_OUROBOROS, "target_type": TARGET_NONE,
+		"description": "For the rest of the battle: Each turn, the first Prophet card you play costs 0 instead.",
+		"traits": ["prophet"], "side": CARD_SIDE_GOD, "abilities": []
+	}
+
 
 func make_test_deck() -> Array[CardData]:
 	var deck_ids: Array[String] = [
@@ -2606,7 +2807,12 @@ func make_test_deck() -> Array[CardData]:
 		"armored_knight", "armored_knight", "armored_knight", "armored_knight",
 		"Novice Soldier", "Novice Soldier", "Novice Soldier", "Novice Soldier",
 		"guardian", "guardian",
-		"quick_blade", "quick_blade"
+		"quick_blade", "quick_blade",
+		"slash", "slash",
+		"fireball", "fireball",
+		"armored_knight", "armored_knight",
+		"Novice Soldier", "Novice Soldier",
+		"guardian", "quick_blade"
 	]
 
 	var deck: Array[CardData] = []
@@ -2715,12 +2921,45 @@ func get_available_card_ids() -> Array[String]:
 	return ids
 	
 func get_card_display_name(card_id: String) -> String:
+	card_id = resolve_card_id(card_id)
 	if not card_database.has(card_id):
 		return card_id
 
 	return str(card_database[card_id].get("name", card_id))
+
+
+func resolve_card_id(raw_card_id: String) -> String:
+	var clean_id: String = raw_card_id.strip_edges()
+	if clean_id == "":
+		return ""
+
+	if card_database.has(clean_id):
+		return clean_id
+
+	var lower_id: String = clean_id.to_lower()
+	for database_id in card_database.keys():
+		var key: String = str(database_id)
+		if key.to_lower() == lower_id:
+			return key
+
+	var snake_id: String = clean_id.to_lower().replace("'", "").replace(",", "").replace("!", "").replace("?", "")
+	snake_id = snake_id.replace("-", " ").replace("/", " ").replace(":", " ").replace(".", " ")
+	while snake_id.find("  ") >= 0:
+		snake_id = snake_id.replace("  ", " ")
+	snake_id = snake_id.strip_edges().replace(" ", "_")
+	if card_database.has(snake_id):
+		return snake_id
+
+	for database_id in card_database.keys():
+		var key: String = str(database_id)
+		var data: Dictionary = card_database[key]
+		if str(data.get("name", key)).to_lower() == lower_id:
+			return key
+
+	return clean_id
 			
 func make_card_from_id(card_id: String) -> CardData:
+	card_id = resolve_card_id(card_id)
 	if not card_database.has(card_id):
 		print("Unknown card_id in CardLibrary: ", card_id)
 		return null

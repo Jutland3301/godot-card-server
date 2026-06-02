@@ -940,15 +940,23 @@ function attackUnit(state, attackerSeat, attackerIndex, defenderSeat, defenderIn
   const combatDamage = applyFlyingFortressPrevention(attacker, defender, defenderDamage, attackerDamage);
   
   const attackerDeadly =
+    U.hasEffectiveKeyword(attacker, getPlayer(state, attackerSeat), C.KEYWORD_DEADLY || "deadly") ||
     hasKeywordPlain(attacker, C.KEYWORD_DEADLY || "deadly") ||
     hasKeywordPlain(attacker, "deadly");
   
   const defenderDeadly =
+    U.hasEffectiveKeyword(defender, getPlayer(state, defenderSeat), C.KEYWORD_DEADLY || "deadly") ||
     hasKeywordPlain(defender, C.KEYWORD_DEADLY || "deadly") ||
     hasKeywordPlain(defender, "deadly");
   
   const actualDamageToDefender = damageUnit(state, defenderSeat, defender, combatDamage.defender, ctx);
   const actualDamageToAttacker = damageUnit(state, attackerSeat, attacker, combatDamage.attacker, ctx);
+  if (actualDamageToDefender > 0 && U.cardId(defender) === "mecha_juggernaut") {
+    dealDamageToAllEnemyUnitsForPlayer(state, defenderSeat, 2, ctx);
+  }
+  if (actualDamageToAttacker > 0 && U.cardId(attacker) === "mecha_juggernaut") {
+    dealDamageToAllEnemyUnitsForPlayer(state, attackerSeat, 2, ctx);
+  }
   
   if (attackerDeadly && actualDamageToDefender > 0 && !isDeadUnit(defender)) {
     defender.hp = 0;

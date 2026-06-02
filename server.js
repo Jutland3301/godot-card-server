@@ -4,7 +4,7 @@ const http = require("http");
 const { WebSocketServer, WebSocket } = require("ws");
 const { Pool } = require("pg");
 const packageInfo = require("./package.json");
-const { makeCardFromId, getAvailableCardIds } = require("./cards_database");
+const { makeCardFromId, getAvailableCardIds, getCardDefinition, getCardRarity, choosePackCardId, NORMAL_CARD_IDS, hasCardDefinition, isDeckBuildableCard, resolveCardId } = require("./cards_database");
 const BattleEngine = require("./battle_engine");
 const { createAuthService } = require("./auth_service");
 const { createAuthRoutes } = require("./auth_routes");
@@ -19,11 +19,19 @@ const REQUIRED_DECK_SIZE = 30;
 const STARTING_HAND_SIZE = 3;
 const STARTING_MANA = 0;
 const TURN_TIME_LIMIT_SECONDS = 45.0;
-const MAX_HAND_SIZE = 7;
+const MAX_HAND_SIZE = 9;
+const PACK_COST = 200;
+const PACK_SIZE = 5;
+const STARTER_CARD_COUNT = 4;
+const INITIAL_GOLD = 1000;
+const MATCH_WIN_GOLD = 100;
 const MATCH_TIMER_TICK_MS = 250;
-const MATCH_RECONNECT_GRACE_MS = Number(process.env.MATCH_RECONNECT_GRACE_MS || 20000);
-const CLIENT_LIVENESS_TIMEOUT_MS = Number(process.env.CLIENT_LIVENESS_TIMEOUT_MS || 10000);
-const CLIENT_LIVENESS_CHECK_MS = Number(process.env.CLIENT_LIVENESS_CHECK_MS || 3000);
+const MATCH_RECONNECT_GRACE_MS = Number(process.env.MATCH_RECONNECT_GRACE_MS || 120000);
+const MATCH_TYPE_CASUAL = "casual";
+const MATCH_TYPE_RANKED = "ranked";
+const INITIAL_RATING = 1500;
+const MIN_RATING = 1200;
+const MAX_RATING = 2000;
 const SERVER_COMMIT =
   process.env.RENDER_GIT_COMMIT ||
   process.env.COMMIT_SHA ||
@@ -143,11 +151,191 @@ async function dbQuery(text, params = []) {
   return await pool.query(text, params);
 }
 
-const authService = createAuthService({ query: dbQuery });
+const authService = createAuthService({ query: dbQuery, initializeUserProgression: ensureUserProgression });
 const authMiddleware = createAuthMiddleware({ authService, sendJson });
 const authRoutes = createAuthRoutes({ authService, readJsonBody, sendJson });
 
 let deckSchemaReady = false;
+let rankedSchemaReady = false;
+let progressionSchemaReady = false;
+
+function getCardCatalogEntry(cardId) {
+  const card = getCardDefinition(cardId) || {};
+  return {
+    card_id: cardId,
+    name: String(card.name || cardId),
+    side: String(card.side || "human"),
+    rarity: getCardRarity(cardId),
+    type: String(card.type || "spell"),
+    cost: Number(card.cost || 0),
+    attack: Number(card.attack || 0),
+    hp: Number(card.hp || 0),
+    traits: Array.isArray(card.traits) ? card.traits : [],
+    image_path: String(card.image_path || ""),
+    description: String(card.description || "")
+  };
+}
+
+function parseDeveloperAccounts() {
+  const raw = String(process.env.DEV_ACCOUNTS || "").trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+  } catch (_error) {
+    // Accept username:password pairs as a compact deployment-friendly format.
+  }
+  return raw.split(",").map((pair) => {
+    const separator = pair.indexOf(":");
+    if (separator < 0) return null;
+    return { username: pair.slice(0, separator).trim(), password: pair.slice(separator + 1) };
+  }).filter(Boolean);
+}
+
+async function ensureProgressionSchema() {
+  if (progressionSchemaReady) return;
+  await authService.ensureSchema();
+  await ensureRankedSchema();
+  await dbQuery("ALTER TABLE cards ALTER COLUMN rarity SET DEFAULT 'silver'");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS external_match_id TEXT");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS reward_gold INTEGER NOT NULL DEFAULT 0");
+  await dbQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_match_logs_external_match_id ON match_logs(external_match_id)");
+  await dbQuery(
+    `UPDATE users
+     SET gold = $1, updated_at = NOW()
+     WHERE gold = 0
+       AND NOT EXISTS (SELECT 1 FROM pack_logs WHERE pack_logs.user_id = users.id)
+       AND NOT EXISTS (
+         SELECT 1
+         FROM match_logs
+         WHERE match_logs.player1_id = users.id OR match_logs.player2_id = users.id
+       )`,
+    [INITIAL_GOLD]
+  );
+  for (const cardId of getAvailableCardIds()) {
+    const card = getCardCatalogEntry(cardId);
+    await dbQuery(
+      `INSERT INTO cards (card_id, side, rarity, enabled)
+       VALUES ($1, $2, $3, TRUE)
+       ON CONFLICT (card_id)
+       DO UPDATE SET side = EXCLUDED.side, rarity = EXCLUDED.rarity, enabled = TRUE`,
+      [card.card_id, card.side, card.rarity]
+    );
+  }
+  progressionSchemaReady = true;
+  for (const account of parseDeveloperAccounts()) {
+    if (!account || !account.username || !account.password) continue;
+    const developer = await authService.seedDeveloperAccount(account);
+    await grantAllCardsToDeveloper(developer.id);
+  }
+}
+
+async function grantAllCardsToDeveloper(userId, db = { query: dbQuery }) {
+  for (const cardId of getAvailableCardIds()) {
+    await db.query(
+      `INSERT INTO user_cards (user_id, card_id, count) VALUES ($1, $2, $3)
+       ON CONFLICT (user_id, card_id)
+       DO UPDATE SET count = GREATEST(user_cards.count, EXCLUDED.count)`,
+      [userId, cardId, STARTER_CARD_COUNT]
+    );
+  }
+}
+
+async function traceStarterSummary(userId) {
+  const summaryResult = await dbQuery(
+    `SELECT COUNT(*)::INTEGER AS rows_count,
+            COALESCE(SUM(count), 0)::INTEGER AS total_owned_count
+     FROM user_cards
+     WHERE user_id = $1`,
+    [userId]
+  );
+  const normalCountsResult = await dbQuery(
+    `SELECT card_id, count
+     FROM user_cards
+     WHERE user_id = $1 AND card_id = ANY($2::text[])
+     ORDER BY card_id`,
+    [userId, NORMAL_CARD_IDS]
+  );
+  const summary = summaryResult.rows[0] || {};
+  const normalCounts = Object.fromEntries(
+    NORMAL_CARD_IDS.map((cardId) => [cardId, 0])
+  );
+  for (const row of normalCountsResult.rows) {
+    normalCounts[String(row.card_id)] = Number(row.count || 0);
+  }
+  console.log("[PROGRESSION_TRACE] starter.done", JSON.stringify({
+    user_id: userId,
+    user_cards_rows_count: Number(summary.rows_count || 0),
+    total_owned_count: Number(summary.total_owned_count || 0),
+    normal_card_counts: normalCounts
+  }));
+}
+
+async function ensureUserProgression(userId) {
+  await ensureProgressionSchema();
+  const userResult = await dbQuery(
+    "SELECT is_developer FROM users WHERE id = $1 LIMIT 1",
+    [userId]
+  );
+  if (userResult.rows.length <= 0) return;
+  console.log("[PROGRESSION_TRACE] starter.begin", JSON.stringify({
+    user_id: userId,
+    is_developer: Boolean(userResult.rows[0].is_developer),
+    starter_cards: NORMAL_CARD_IDS.map((cardId) => {
+      const card = getCardDefinition(cardId);
+      return {
+        requested_name: cardId,
+        card_database_found: Boolean(card),
+        resolved_card_id: resolveCardId(cardId),
+        display_name: card ? String(card.name || cardId) : ""
+      };
+    })
+  }));
+  if (Boolean(userResult.rows[0].is_developer)) {
+    await grantAllCardsToDeveloper(userId);
+    await traceStarterSummary(userId);
+    return;
+  }
+  for (const cardId of NORMAL_CARD_IDS) {
+    const card = getCardDefinition(cardId);
+    const cardsTableResult = await dbQuery(
+      "SELECT card_id FROM cards WHERE card_id = $1 LIMIT 1",
+      [cardId]
+    );
+    try {
+      const upsertResult = await dbQuery(
+        `INSERT INTO user_cards (user_id, card_id, count) VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, card_id)
+         DO UPDATE SET count = GREATEST(user_cards.count, EXCLUDED.count)`,
+        [userId, cardId, STARTER_CARD_COUNT]
+      );
+      console.log("[PROGRESSION_TRACE] starter.card", JSON.stringify({
+        user_id: userId,
+        requested_name: cardId,
+        card_database_found: Boolean(card),
+        cards_table_found: cardsTableResult.rows.length > 0,
+        resolved_card_id: resolveCardId(cardId),
+        inserted_card_id: cardId,
+        user_cards_affected_rows: Number(upsertResult.rowCount || 0),
+        failed: false
+      }));
+    } catch (error) {
+      console.log("[PROGRESSION_TRACE] starter.card", JSON.stringify({
+        user_id: userId,
+        requested_name: cardId,
+        card_database_found: Boolean(card),
+        cards_table_found: cardsTableResult.rows.length > 0,
+        resolved_card_id: resolveCardId(cardId),
+        inserted_card_id: cardId,
+        user_cards_affected_rows: 0,
+        failed: true,
+        error: String(error && error.message ? error.message : error)
+      }));
+      throw error;
+    }
+  }
+  await traceStarterSummary(userId);
+}
 
 async function ensureDeckSchema() {
   if (deckSchemaReady) {
@@ -169,8 +357,330 @@ async function ensureDeckSchema() {
   deckSchemaReady = true;
 }
 
+function getCurrentSeasonId() {
+  return new Date().toISOString().slice(0, 7);
+}
+
+function rankFromRating(value) {
+  const rating = Math.max(MIN_RATING, Math.min(MAX_RATING, Math.round(Number(value) || INITIAL_RATING)));
+  if (rating >= 1900) return "Celestial";
+  if (rating >= 1800) return "Grandmaster";
+  if (rating >= 1700) return "Master";
+  if (rating >= 1600) return "Diamond";
+  if (rating >= 1500) return "Platinum";
+  if (rating >= 1400) return "Gold";
+  if (rating >= 1300) return "Silver";
+  return "Bronze";
+}
+
+function normalizeMatchType(value) {
+  const matchType = String(value || MATCH_TYPE_CASUAL).trim().toLowerCase();
+  return matchType === MATCH_TYPE_CASUAL || matchType === MATCH_TYPE_RANKED ? matchType : "";
+}
+
+function calculateWinRating(currentRating, newWinStreak) {
+  const rating = Math.max(MIN_RATING, Math.min(MAX_RATING, Math.round(Number(currentRating) || INITIAL_RATING)));
+  const effectiveStreak = Math.max(0, Math.min(12, Number(newWinStreak) || 0));
+  const baseGain = 8 + 24 * ((MAX_RATING - rating) / 800);
+  const multiplier = effectiveStreak < 3
+    ? 1.0
+    : 1.0 + 0.35 * (1.0 - Math.exp(-(effectiveStreak - 2) / 3.0));
+  return Math.max(MIN_RATING, Math.min(MAX_RATING, Math.round(rating + Math.round(baseGain * multiplier))));
+}
+
+function calculateLossRating(currentRating) {
+  const rating = Math.max(MIN_RATING, Math.min(MAX_RATING, Math.round(Number(currentRating) || INITIAL_RATING)));
+  const baseLoss = 8 + 24 * ((rating - MIN_RATING) / 800);
+  return Math.max(MIN_RATING, Math.min(MAX_RATING, Math.round(rating - Math.round(baseLoss))));
+}
+
+async function ensureRankedSchema() {
+  if (rankedSchemaReady) return;
+  await dbQuery(`
+    CREATE TABLE IF NOT EXISTS rank_profiles (
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      rating INTEGER NOT NULL DEFAULT 1500,
+      rank_points INTEGER NOT NULL DEFAULT 1500,
+      wins INTEGER NOT NULL DEFAULT 0,
+      losses INTEGER NOT NULL DEFAULT 0,
+      draws INTEGER NOT NULL DEFAULT 0,
+      current_rank TEXT NOT NULL DEFAULT 'Platinum',
+      win_streak INTEGER NOT NULL DEFAULT 0,
+      current_season_id TEXT NOT NULL DEFAULT '',
+      highest_rating_this_season INTEGER NOT NULL DEFAULT 1500,
+      highest_rank_this_season TEXT NOT NULL DEFAULT 'Platinum',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await dbQuery(`
+    CREATE TABLE IF NOT EXISTS match_logs (
+      id SERIAL PRIMARY KEY,
+      player1_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      player2_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      winner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      loser_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      result TEXT NOT NULL DEFAULT 'unknown',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await dbQuery("ALTER TABLE rank_profiles ALTER COLUMN rating SET DEFAULT 1500");
+  await dbQuery("ALTER TABLE rank_profiles ADD COLUMN IF NOT EXISTS rank_points INTEGER NOT NULL DEFAULT 1500");
+  await dbQuery("ALTER TABLE rank_profiles ADD COLUMN IF NOT EXISTS wins INTEGER NOT NULL DEFAULT 0");
+  await dbQuery("ALTER TABLE rank_profiles ADD COLUMN IF NOT EXISTS losses INTEGER NOT NULL DEFAULT 0");
+  await dbQuery("ALTER TABLE rank_profiles ADD COLUMN IF NOT EXISTS draws INTEGER NOT NULL DEFAULT 0");
+  await dbQuery("ALTER TABLE rank_profiles ADD COLUMN IF NOT EXISTS current_rank TEXT NOT NULL DEFAULT 'Platinum'");
+  await dbQuery("ALTER TABLE rank_profiles ADD COLUMN IF NOT EXISTS win_streak INTEGER NOT NULL DEFAULT 0");
+  await dbQuery("ALTER TABLE rank_profiles ADD COLUMN IF NOT EXISTS current_season_id TEXT NOT NULL DEFAULT ''");
+  await dbQuery("ALTER TABLE rank_profiles ADD COLUMN IF NOT EXISTS highest_rating_this_season INTEGER NOT NULL DEFAULT 1500");
+  await dbQuery("ALTER TABLE rank_profiles ADD COLUMN IF NOT EXISTS highest_rank_this_season TEXT NOT NULL DEFAULT 'Platinum'");
+  await dbQuery("ALTER TABLE rank_profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()");
+  await dbQuery("ALTER TABLE rank_profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS match_type TEXT NOT NULL DEFAULT 'casual'");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS ended_reason TEXT NOT NULL DEFAULT 'normal'");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ NOT NULL DEFAULT NOW()");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS player1_side TEXT");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS player2_side TEXT");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS winner_rating_before INTEGER");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS winner_rating_after INTEGER");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS loser_rating_before INTEGER");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS loser_rating_after INTEGER");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS winner_rank_before TEXT");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS winner_rank_after TEXT");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS loser_rank_before TEXT");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS loser_rank_after TEXT");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS external_match_id TEXT");
+  await dbQuery("ALTER TABLE match_logs ADD COLUMN IF NOT EXISTS reward_gold INTEGER NOT NULL DEFAULT 0");
+  await dbQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_match_logs_external_match_id ON match_logs(external_match_id)");
+  await dbQuery(`
+    CREATE TABLE IF NOT EXISTS rank_season_history (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      season_id TEXT NOT NULL,
+      final_rating INTEGER NOT NULL,
+      final_rank TEXT NOT NULL,
+      highest_rating INTEGER NOT NULL,
+      highest_rank TEXT NOT NULL,
+      wins INTEGER NOT NULL,
+      losses INTEGER NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, season_id)
+    )
+  `);
+  await dbQuery("UPDATE rank_profiles SET rating = GREATEST(1200, LEAST(2000, rating))");
+  await dbQuery("UPDATE rank_profiles SET rank_points = rating WHERE rank_points IS NULL OR rank_points = 0");
+  rankedSchemaReady = true;
+}
+
+async function getSeasonProfile(db, userId) {
+  const seasonId = getCurrentSeasonId();
+  await db.query(
+    `INSERT INTO rank_profiles
+      (user_id, rating, rank_points, current_rank, current_season_id, highest_rating_this_season, highest_rank_this_season)
+     VALUES ($1, $2, $2, $3, $4, $2, $3)
+     ON CONFLICT (user_id) DO NOTHING`,
+    [userId, INITIAL_RATING, rankFromRating(INITIAL_RATING), seasonId]
+  );
+  let result = await db.query("SELECT * FROM rank_profiles WHERE user_id = $1 LIMIT 1", [userId]);
+  let profile = result.rows[0];
+  const oldRating = Math.max(MIN_RATING, Math.min(MAX_RATING, Math.round(Number(profile.rating) || INITIAL_RATING)));
+  const oldRank = rankFromRating(oldRating);
+  const previousSeason = String(profile.current_season_id || "");
+
+  if (previousSeason !== "" && previousSeason !== seasonId) {
+    await db.query(
+      `INSERT INTO rank_season_history
+        (user_id, season_id, final_rating, final_rank, highest_rating, highest_rank, wins, losses)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (user_id, season_id) DO NOTHING`,
+      [
+        userId,
+        previousSeason,
+        oldRating,
+        oldRank,
+        Number(profile.highest_rating_this_season || oldRating),
+        String(profile.highest_rank_this_season || oldRank),
+        Number(profile.wins || 0),
+        Number(profile.losses || 0)
+      ]
+    );
+    const resetRating = Math.max(
+      MIN_RATING,
+      Math.min(MAX_RATING, Math.round(INITIAL_RATING + (oldRating - INITIAL_RATING) * 0.35))
+    );
+    const resetRank = rankFromRating(resetRating);
+    await db.query(
+      `UPDATE rank_profiles
+       SET rating = $2, rank_points = $2, wins = 0, losses = 0, draws = 0, win_streak = 0,
+           current_rank = $3, current_season_id = $4,
+           highest_rating_this_season = $2, highest_rank_this_season = $3,
+           updated_at = NOW()
+       WHERE user_id = $1`,
+      [userId, resetRating, resetRank, seasonId]
+    );
+  } else {
+    await db.query(
+      `UPDATE rank_profiles
+       SET rating = $2, rank_points = $2, current_rank = $3, current_season_id = $4,
+           highest_rating_this_season = GREATEST(highest_rating_this_season, $2),
+           updated_at = NOW()
+       WHERE user_id = $1`,
+      [userId, oldRating, oldRank, seasonId]
+    );
+  }
+
+  result = await db.query(
+    `SELECT user_id, rating, rank_points, wins, losses, draws, current_rank, win_streak, current_season_id,
+            highest_rating_this_season, highest_rank_this_season, created_at, updated_at
+     FROM rank_profiles WHERE user_id = $1 LIMIT 1`,
+    [userId]
+  );
+  profile = result.rows[0];
+  const played = Number(profile.wins || 0) + Number(profile.losses || 0);
+  profile.win_rate = played > 0 ? Number((Number(profile.wins || 0) * 100 / played).toFixed(1)) : 0.0;
+  return profile;
+}
+
+async function finalizeMatch(match, endedReason) {
+  if (!match || match.result_saved) return;
+  match.result_saved = true;
+  if (!pool) return;
+
+  const reason = ["normal", "surrender", "disconnect", "server_error"].includes(endedReason)
+    ? endedReason
+    : "server_error";
+  const state = match.state || {};
+  const winnerSeat = String(state.winner_seat || "");
+  const loserSeat = String(state.loser_seat || "");
+  const winnerUserId = match.seats[winnerSeat] ? Number(match.seats[winnerSeat].user_id || 0) : null;
+  const loserUserId = match.seats[loserSeat] ? Number(match.seats[loserSeat].user_id || 0) : null;
+  const validWinner = winnerUserId && loserUserId && winnerUserId !== loserUserId;
+  const applyRankedResult = match.match_type === MATCH_TYPE_RANKED && reason !== "server_error" && validWinner;
+  const db = await pool.connect();
+
+  try {
+    await db.query("BEGIN");
+    let winnerBefore = null;
+    let winnerAfter = null;
+    let loserBefore = null;
+    let loserAfter = null;
+
+    if (applyRankedResult) {
+      winnerBefore = await getSeasonProfile(db, winnerUserId);
+      loserBefore = await getSeasonProfile(db, loserUserId);
+      const newStreak = Number(winnerBefore.win_streak || 0) + 1;
+      const winnerRating = calculateWinRating(winnerBefore.rating, newStreak);
+      const loserRating = calculateLossRating(loserBefore.rating);
+      const winnerRank = rankFromRating(winnerRating);
+      const loserRank = rankFromRating(loserRating);
+      await db.query(
+        `UPDATE rank_profiles
+         SET rating = $2, rank_points = $2, wins = wins + 1, win_streak = $3, current_rank = $4,
+             highest_rating_this_season = GREATEST(highest_rating_this_season, $2),
+             highest_rank_this_season = CASE WHEN highest_rating_this_season <= $2 THEN $4 ELSE highest_rank_this_season END,
+             updated_at = NOW()
+         WHERE user_id = $1`,
+        [winnerUserId, winnerRating, newStreak, winnerRank]
+      );
+      await db.query(
+        `UPDATE rank_profiles
+         SET rating = $2, rank_points = $2, losses = losses + 1, win_streak = 0, current_rank = $3,
+             updated_at = NOW()
+         WHERE user_id = $1`,
+        [loserUserId, loserRating, loserRank]
+      );
+      winnerAfter = { rating: winnerRating, current_rank: winnerRank };
+      loserAfter = { rating: loserRating, current_rank: loserRank };
+    }
+
+    const logResult = await db.query(
+      `INSERT INTO match_logs
+        (player1_id, player2_id, winner_id, loser_id, result, match_type, ended_reason,
+         started_at, ended_at, player1_side, player2_side,
+         winner_rating_before, winner_rating_after, loser_rating_before, loser_rating_after,
+         winner_rank_before, winner_rank_after, loser_rank_before, loser_rank_after,
+         external_match_id, reward_gold)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+       ON CONFLICT (external_match_id) DO NOTHING
+       RETURNING id`,
+      [
+        Number(match.seats.A.user_id || 0) || null,
+        Number(match.seats.B.user_id || 0) || null,
+        validWinner ? winnerUserId : null,
+        validWinner ? loserUserId : null,
+        validWinner ? "win" : "draw",
+        match.match_type,
+        reason,
+        new Date(Number(match.created_at || Date.now())),
+        match.seats.A.side,
+        match.seats.B.side,
+        winnerBefore ? Number(winnerBefore.rating) : null,
+        winnerAfter ? winnerAfter.rating : null,
+        loserBefore ? Number(loserBefore.rating) : null,
+        loserAfter ? loserAfter.rating : null,
+        winnerBefore ? String(winnerBefore.current_rank) : null,
+        winnerAfter ? winnerAfter.current_rank : null,
+        loserBefore ? String(loserBefore.current_rank) : null,
+        loserAfter ? loserAfter.current_rank : null,
+        String(match.match_id || ""),
+        validWinner && reason !== "server_error" ? MATCH_WIN_GOLD : 0
+      ]
+    );
+    let awardedGold = 0;
+    if (logResult.rows.length > 0 && validWinner && reason !== "server_error") {
+      await db.query("UPDATE users SET gold = gold + $2, updated_at = NOW() WHERE id = $1", [winnerUserId, MATCH_WIN_GOLD]);
+      awardedGold = MATCH_WIN_GOLD;
+    }
+    const userIds = [...new Set([winnerUserId, loserUserId].filter(Boolean))];
+    const progressionResult = userIds.length > 0
+      ? await db.query(
+          "SELECT id, gold, role, is_developer, account_type FROM users WHERE id = ANY($1::int[])",
+          [userIds]
+        )
+      : { rows: [] };
+    await db.query("COMMIT");
+    sendBattleProgressionUpdates(match, progressionResult.rows, winnerUserId, awardedGold);
+  } catch (error) {
+    match.result_saved = false;
+    await db.query("ROLLBACK");
+    throw error;
+  } finally {
+    db.release();
+  }
+}
+
+function sendBattleProgressionUpdates(match, progressionRows, winnerUserId, awardedGold) {
+  const progressionByUserId = new Map(
+    progressionRows.map((row) => [Number(row.id), row])
+  );
+
+  for (const seatId of ["A", "B"]) {
+    const seat = match && match.seats ? match.seats[seatId] : null;
+    const client = seat ? clients.get(seat.client_id) : null;
+    const userId = seat ? Number(seat.user_id || 0) : 0;
+    const progression = progressionByUserId.get(userId);
+
+    if (!client || !progression) {
+      continue;
+    }
+
+    safeSend(client.ws, {
+      type: "battle_result",
+      match_id: String(match.match_id || ""),
+      result_for_client: Number(winnerUserId || 0) === userId ? "win" : winnerUserId ? "lose" : "draw",
+      reward_gold: Number(winnerUserId || 0) === userId ? awardedGold : 0,
+      gold: Number(progression.gold || 0),
+      role: String(progression.role || "normal"),
+      is_developer: Boolean(progression.is_developer),
+      account_type: String(progression.account_type || progression.role || "normal")
+    });
+  }
+}
+
 async function requireUser(req, res) {
-  return await authMiddleware.requireAuth(req, res);
+  const user = await authMiddleware.requireAuth(req, res);
+  if (user) await ensureUserProgression(user.id);
+  return user;
 }
 
 function normalizeSide(value) {
@@ -184,19 +694,46 @@ function normalizeSide(value) {
 }
 
 function countCards(cardIds) {
-  const counts = new Map();
+	const counts = new Map();
 
-  for (const raw of cardIds) {
-    const cardId = String(raw || "").trim();
+	for (const raw of cardIds) {
+		const cardId = extractCardId(raw);
 
-    if (!cardId) {
-      continue;
-    }
+		if (!cardId) {
+			continue;
+		}
 
-    counts.set(cardId, (counts.get(cardId) || 0) + 1);
-  }
+		counts.set(cardId, (counts.get(cardId) || 0) + 1);
+	}
 
-  return counts;
+	return counts;
+}
+
+function extractCardId(raw) {
+	if (raw && typeof raw === "object") {
+		const direct = raw.card_id || raw.cardId || raw.id || "";
+		if (direct && hasCardDefinition(direct)) {
+			return resolveCardId(direct);
+		}
+
+		const nested = raw.card || raw.card_data || null;
+		if (nested && typeof nested === "object") {
+			const nestedId = extractCardId(nested);
+			if (nestedId) {
+				return nestedId;
+			}
+		}
+
+		const name = raw.name || raw.card_name || raw.cardName || "";
+		if (name && hasCardDefinition(name)) {
+			return resolveCardId(name);
+		}
+
+		return String(direct || "").trim();
+	}
+
+	const cardId = String(raw || "").trim();
+	return hasCardDefinition(cardId) ? resolveCardId(cardId) : cardId;
 }
 
 // ============================================================================
@@ -209,17 +746,42 @@ async function handleCollection(req, res) {
     return;
   }
 
+  await ensureUserProgression(user.id);
+
   const result = await dbQuery(
     `
-    SELECT card_id, count
+    SELECT user_cards.card_id, user_cards.count, cards.side, cards.rarity
     FROM user_cards
+    INNER JOIN cards ON cards.card_id = user_cards.card_id
     WHERE user_id = $1
     ORDER BY card_id ASC
     `,
     [user.id]
   );
 
-  sendJson(res, 200, { ok: true, cards: result.rows });
+  const cards = result.rows.map((row) => ({ ...getCardCatalogEntry(row.card_id), count: Number(row.count || 0) }));
+  const userResult = await dbQuery("SELECT gold, role, is_developer, account_type FROM users WHERE id = $1", [user.id]);
+  const ownedSummaryResult = await dbQuery(
+    `SELECT COUNT(*)::INTEGER AS rows_count,
+            COALESCE(SUM(count), 0)::INTEGER AS total_owned_count
+     FROM user_cards
+     WHERE user_id = $1`,
+    [user.id]
+  );
+  const normalCounts = Object.fromEntries(
+    NORMAL_CARD_IDS.map((cardId) => [cardId, Number((result.rows.find((row) => row.card_id === cardId) || {}).count || 0)])
+  );
+  const ownedSummary = ownedSummaryResult.rows[0] || {};
+  console.log("[PROGRESSION_TRACE] collection.response", JSON.stringify({
+    user_id: user.id,
+    db_gold: Number(userResult.rows[0].gold || 0),
+    top_level_gold: Number(userResult.rows[0].gold || 0),
+    cards_returned_count: cards.length,
+    owned_cards_rows_count: Number(ownedSummary.rows_count || 0),
+    total_owned_count: Number(ownedSummary.total_owned_count || 0),
+    normal_card_counts: normalCounts
+  }));
+  sendJson(res, 200, { ok: true, cards, ...userResult.rows[0] });
 }
 
 async function handleOpenPack(req, res) {
@@ -236,10 +798,8 @@ async function handleOpenPack(req, res) {
     return;
   }
 
-  const packType = String(body.pack_type || body.packType || "test");
-  const count = Math.max(1, Math.min(20, Number(body.count || 5)));
-  const availableCardIds = getAvailableCardIds();
-
+  const packType = String(body.pack_type || body.packType || "standard");
+  const availableCardIds = getAvailableCardIds().filter((cardId) => getCardRarity(cardId) !== "normal");
   if (availableCardIds.length <= 0) {
     sendJson(res, 400, { ok: false, error: "No cards available." });
     return;
@@ -247,14 +807,39 @@ async function handleOpenPack(req, res) {
 
   const opened = [];
 
-  for (let i = 0; i < count; i++) {
-    opened.push(availableCardIds[Math.floor(Math.random() * availableCardIds.length)]);
+  for (let i = 0; i < PACK_SIZE; i++) {
+    const cardId = choosePackCardId();
+    if (!cardId) {
+      sendJson(res, 500, { ok: false, error: "Pack rarity pool is empty." });
+      return;
+    }
+    opened.push(cardId);
   }
 
   const client = await pool.connect();
 
   try {
     await client.query("BEGIN");
+    const userResult = await client.query("SELECT gold, is_developer FROM users WHERE id = $1 FOR UPDATE", [user.id]);
+    const account = userResult.rows[0];
+    console.log("[PROGRESSION_TRACE] open_pack.start", JSON.stringify({
+      user_id: user.id,
+      request_gold: Number(account.gold || 0),
+      is_developer: Boolean(account.is_developer),
+      insufficient_gold: Number(account.gold || 0) < PACK_COST,
+      can_purchase: !Boolean(account.is_developer) && Number(account.gold || 0) >= PACK_COST
+    }));
+    if (Boolean(account.is_developer)) {
+      await client.query("ROLLBACK");
+      sendJson(res, 400, { ok: false, error: "Developer accounts already have every card." });
+      return;
+    }
+    if (Number(account.gold || 0) < PACK_COST) {
+      await client.query("ROLLBACK");
+      sendJson(res, 400, { ok: false, error: "Not enough gold." });
+      return;
+    }
+    await client.query("UPDATE users SET gold = gold - $2, updated_at = NOW() WHERE id = $1", [user.id, PACK_COST]);
 
     const packLogResult = await client.query(
       "INSERT INTO pack_logs (user_id, pack_type) VALUES ($1, $2) RETURNING id",
@@ -283,17 +868,38 @@ async function handleOpenPack(req, res) {
 
     await client.query("COMMIT");
 
-    const cards = Array.from(openedCounts.entries()).map(([cardId, amount]) => ({
-      card_id: cardId,
+    const cards = opened.map((cardId) => ({
+      ...getCardCatalogEntry(cardId),
+      amount: 1
+    }));
+    const updatedCountsResult = await dbQuery("SELECT card_id, count FROM user_cards WHERE user_id = $1 ORDER BY card_id", [user.id]);
+    const updatedCounts = updatedCountsResult.rows.map((row) => ({
+      card_id: row.card_id,
+      count: Number(row.count || 0)
+    }));
+    const newGoldResult = await dbQuery("SELECT gold FROM users WHERE id = $1", [user.id]);
+    const groupedCards = Array.from(openedCounts.entries()).map(([cardId, amount]) => ({
+      ...getCardCatalogEntry(cardId),
       count: amount,
       amount
+    }));
+    console.log("[PROGRESSION_TRACE] open_pack.response", JSON.stringify({
+      user_id: user.id,
+      response_gold: Number(newGoldResult.rows[0].gold || 0),
+      response_new_gold: Number(newGoldResult.rows[0].gold || 0),
+      opened_cards_count: cards.length,
+      updated_counts_rows_count: updatedCounts.length
     }));
 
     sendJson(res, 200, {
       ok: true,
       pack_log_id: packLogId,
-      cards,
-      results: cards
+      cards: groupedCards,
+      opened_cards: cards,
+      results: groupedCards,
+      updated_counts: updatedCounts,
+      new_gold: Number(newGoldResult.rows[0].gold || 0),
+      gold: Number(newGoldResult.rows[0].gold || 0)
     });
   } catch (error) {
     await client.query("ROLLBACK");
@@ -388,10 +994,28 @@ async function handleSaveDeck(req, res) {
       ? body.card_ids
       : [];
 
-  const cardIds = cardSource.map((value) => String(value || "").trim()).filter(Boolean);
+  const cardIds = cardSource.map((value) => extractCardId(value)).filter(Boolean);
 
   if (!name) {
     sendJson(res, 400, { ok: false, error: "Deck name is empty." });
+    return;
+  }
+
+  const unknownCardIds = cardIds.filter((cardId) => !hasCardDefinition(cardId));
+  if (unknownCardIds.length > 0) {
+    sendJson(res, 400, { ok: false, error: "Unknown card_id: " + unknownCardIds[0] });
+    return;
+  }
+
+  const unavailableCardIds = cardIds.filter((cardId) => !isDeckBuildableCard(cardId));
+  if (unavailableCardIds.length > 0) {
+    sendJson(res, 400, { ok: false, error: "Card cannot be added to a deck: " + unavailableCardIds[0] });
+    return;
+  }
+
+  const wrongSideCardIds = cardIds.filter((cardId) => String((getCardDefinition(cardId) || {}).side || "human") !== side);
+  if (wrongSideCardIds.length > 0) {
+    sendJson(res, 400, { ok: false, error: "Card side does not match deck side: " + wrongSideCardIds[0] });
     return;
   }
 
@@ -400,6 +1024,18 @@ async function handleSaveDeck(req, res) {
 
   try {
     await client.query("BEGIN");
+    const accountResult = await client.query("SELECT is_developer FROM users WHERE id = $1 FOR UPDATE", [user.id]);
+    if (!Boolean(accountResult.rows[0] && accountResult.rows[0].is_developer)) {
+      const ownedResult = await client.query("SELECT card_id, count FROM user_cards WHERE user_id = $1", [user.id]);
+      const ownedCounts = new Map(ownedResult.rows.map((row) => [String(row.card_id), Number(row.count || 0)]));
+      for (const [cardId, amount] of cardCounts.entries()) {
+        if (amount > Math.min(4, ownedCounts.get(cardId) || 0)) {
+          await client.query("ROLLBACK");
+          sendJson(res, 400, { ok: false, error: "Not enough owned copies of card: " + cardId });
+          return;
+        }
+      }
+    }
 
     let finalDeckId = deckId;
 
@@ -511,23 +1147,19 @@ async function handleRankedProfile(req, res) {
   if (!user) {
     return;
   }
-
-  await dbQuery(
-    "INSERT INTO rank_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
-    [user.id]
-  );
-
-  const result = await dbQuery(
-    `
-    SELECT user_id, rating, rank_points, wins, losses, draws
-    FROM rank_profiles
-    WHERE user_id = $1
-    LIMIT 1
-    `,
-    [user.id]
-  );
-
-  sendJson(res, 200, { ok: true, profile: result.rows[0] });
+  await ensureRankedSchema();
+  const db = await pool.connect();
+  try {
+    await db.query("BEGIN");
+    const profile = await getSeasonProfile(db, user.id);
+    await db.query("COMMIT");
+    sendJson(res, 200, { ok: true, profile });
+  } catch (error) {
+    await db.query("ROLLBACK");
+    throw error;
+  } finally {
+    db.release();
+  }
 }
 
 async function handleRankedResult(req, res) {
@@ -537,112 +1169,9 @@ async function handleRankedResult(req, res) {
     return;
   }
 
-  const body = await readJsonBody(req);
-
-  if (body === null) {
-    sendJson(res, 400, { ok: false, error: "Invalid JSON" });
-    return;
-  }
-
-  const resultText = String(body.result || "").toLowerCase();
-  const opponentId = Number(body.opponent_id || 0);
-
-  if (resultText !== "win" && resultText !== "loss" && resultText !== "draw") {
-    sendJson(res, 400, { ok: false, error: "result must be win, loss, or draw." });
-    return;
-  }
-
-  await dbQuery(
-    "INSERT INTO rank_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
-    [user.id]
-  );
-
-  const beforeResult = await dbQuery(
-    "SELECT rating, rank_points, wins, losses, draws FROM rank_profiles WHERE user_id = $1 LIMIT 1",
-    [user.id]
-  );
-
-  const before = beforeResult.rows[0];
-  const ratingBefore = Number(before.rating || 1000);
-  let ratingAfter = ratingBefore;
-  let rankDelta = 0;
-
-  if (resultText === "win") {
-    ratingAfter += 10;
-    rankDelta = 10;
-  } else if (resultText === "loss") {
-    ratingAfter = Math.max(0, ratingAfter - 8);
-    rankDelta = -5;
-  } else {
-    ratingAfter += 1;
-    rankDelta = 1;
-  }
-
-  if (resultText === "win") {
-    await dbQuery(
-      `
-      UPDATE rank_profiles
-      SET rating = $2,
-          rank_points = GREATEST(0, rank_points + $3),
-          wins = wins + 1
-      WHERE user_id = $1
-      `,
-      [user.id, ratingAfter, rankDelta]
-    );
-  } else if (resultText === "loss") {
-    await dbQuery(
-      `
-      UPDATE rank_profiles
-      SET rating = $2,
-          rank_points = GREATEST(0, rank_points + $3),
-          losses = losses + 1
-      WHERE user_id = $1
-      `,
-      [user.id, ratingAfter, rankDelta]
-    );
-  } else {
-    await dbQuery(
-      `
-      UPDATE rank_profiles
-      SET rating = $2,
-          rank_points = GREATEST(0, rank_points + $3),
-          draws = draws + 1
-      WHERE user_id = $1
-      `,
-      [user.id, ratingAfter, rankDelta]
-    );
-  }
-
-  await dbQuery(
-    `
-    INSERT INTO match_logs (player1_id, player2_id, winner_id, loser_id, result)
-    VALUES ($1, $2, $3, $4, $5)
-    `,
-    [
-      user.id,
-      opponentId > 0 ? opponentId : null,
-      resultText === "win" ? user.id : null,
-      resultText === "loss" ? user.id : null,
-      resultText
-    ]
-  );
-
-  const profileResult = await dbQuery(
-    `
-    SELECT user_id, rating, rank_points, wins, losses, draws
-    FROM rank_profiles
-    WHERE user_id = $1
-    LIMIT 1
-    `,
-    [user.id]
-  );
-
-  sendJson(res, 200, {
-    ok: true,
-    result: resultText,
-    rating_before: ratingBefore,
-    rating_after: ratingAfter,
-    profile: profileResult.rows[0]
+  sendJson(res, 403, {
+    ok: false,
+    error: "Ranked results are recorded only from server-authoritative matches."
   });
 }
 
@@ -756,6 +1285,29 @@ function removeClientFromQueue(clientId) {
   }
 }
 
+function hasOtherQueueOrMatchForUser(userId, clientId) {
+  const targetUserId = Number(userId || 0);
+  const ignoredClientId = String(clientId || "");
+
+  for (const entry of queue) {
+    if (entry && Number(entry.user_id || 0) === targetUserId && String(entry.client_id || "") !== ignoredClientId) {
+      return true;
+    }
+  }
+
+  for (const match of matches.values()) {
+    if (!match || !match.seats) continue;
+    for (const seatId of ["A", "B"]) {
+      const seat = match.seats[seatId];
+      if (seat && Number(seat.user_id || 0) === targetUserId && String(seat.client_id || "") !== ignoredClientId) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 function getSideFromDeckData(deckData) {
   if (!deckData || typeof deckData !== "object") {
     return "";
@@ -802,7 +1354,7 @@ function getCardIdsFromDeckData(deckData) {
       ? deckData.cards
       : [];
 
-  return source.map((value) => String(value || "").trim()).filter(Boolean);
+  return source.map((value) => extractCardId(value)).filter(Boolean);
 }
 
 function validateDeckData(deckData) {
@@ -822,6 +1374,35 @@ function validateDeckData(deckData) {
     return `deck_data must contain exactly ${REQUIRED_DECK_SIZE} cards.`;
   }
 
+  const unknownCardIds = cards.filter((cardId) => !hasCardDefinition(cardId));
+  if (unknownCardIds.length > 0) {
+    return "deck_data contains unknown card_id: " + unknownCardIds[0];
+  }
+
+  const unavailableCardIds = cards.filter((cardId) => !isDeckBuildableCard(cardId));
+  if (unavailableCardIds.length > 0) {
+    return "deck_data contains a card that cannot be added to a deck: " + unavailableCardIds[0];
+  }
+
+  const wrongSideCardIds = cards.filter((cardId) => String((getCardDefinition(cardId) || {}).side || "human") !== side);
+  if (wrongSideCardIds.length > 0) {
+    return "deck_data contains a card from the wrong side: " + wrongSideCardIds[0];
+  }
+
+  return "";
+}
+
+async function validateOwnedDeckData(userId, deckData) {
+  await ensureUserProgression(userId);
+  const accountResult = await dbQuery("SELECT is_developer FROM users WHERE id = $1 LIMIT 1", [userId]);
+  if (Boolean(accountResult.rows[0] && accountResult.rows[0].is_developer)) return "";
+  const ownedResult = await dbQuery("SELECT card_id, count FROM user_cards WHERE user_id = $1", [userId]);
+  const ownedCounts = new Map(ownedResult.rows.map((row) => [String(row.card_id), Number(row.count || 0)]));
+  for (const [cardId, amount] of countCards(getCardIdsFromDeckData(deckData)).entries()) {
+    if (amount > Math.min(4, ownedCounts.get(cardId) || 0)) {
+      return "deck_data contains more copies than this account owns: " + cardId;
+    }
+  }
   return "";
 }
 
@@ -836,6 +1417,14 @@ function findQueuePair() {
       }
 
       if (!clients.has(a.client_id) || !clients.has(b.client_id)) {
+        continue;
+      }
+
+      if (a.match_type !== b.match_type) {
+        continue;
+      }
+
+      if (Number(a.user_id || 0) === Number(b.user_id || 0)) {
         continue;
       }
 
@@ -985,8 +1574,11 @@ function makeInitialMatchState(match) {
     pending_summons: [],
     pending_hand_selection_effect: "",
     pending_hand_selection_owner: "",
+    pending_card_selection_owner: "",
     pending_card_selection_zone: "hand",
-    pending_hand_candidate_indexes: []
+    pending_hand_candidate_indexes: [],
+    pending_end_turn_after_hand_selection: false,
+    pending_end_turn_seat: ""
   };
 
   const result = BattleEngine.startTurn(state, coinFlip.first_player_seat, { makeCardFromId });
@@ -1088,6 +1680,8 @@ function getPublicBattleState(match) {
 
       if (publicState && typeof publicState === "object") {
         publicState.match_id = match.match_id;
+        publicState.match_type = match.match_type;
+        addPublicResultMetadata(match, publicState);
         return publicState;
       }
     }
@@ -1101,7 +1695,28 @@ function getPublicBattleState(match) {
 
   const fallback = normalizeAuthoritativeState(match.state);
   fallback.match_id = match.match_id;
+  fallback.match_type = match.match_type;
+  addPublicResultMetadata(match, fallback);
   return fallback;
+}
+
+function addPublicResultMetadata(match, state) {
+  if (!state || !state.game_over) return;
+  const winnerSeat = String(state.winner_seat || "");
+  const loserSeat = String(state.loser_seat || "");
+  state.winner_side = match.seats[winnerSeat] ? match.seats[winnerSeat].side : "";
+  state.loser_side = match.seats[loserSeat] ? match.seats[loserSeat].side : "";
+  state.winner_user_id = match.seats[winnerSeat] ? Number(match.seats[winnerSeat].user_id || 0) : 0;
+  state.loser_user_id = match.seats[loserSeat] ? Number(match.seats[loserSeat].user_id || 0) : 0;
+  state.result_reason = String((match.state && match.state.result_reason) || state.result_reason || "normal");
+}
+
+function publicStateForSeat(publicState, seatId) {
+  const state = { ...publicState };
+  if (state.game_over) {
+    state.result_for_client = state.winner_seat === seatId ? "win" : state.loser_seat === seatId ? "lose" : "draw";
+  }
+  return state;
 }
 
 function broadcastMatchState(matchId) {
@@ -1122,7 +1737,7 @@ function broadcastMatchState(matchId) {
       type: "match_state",
       match_id: matchId,
       seat_id: "A",
-      state: publicState
+      state: publicStateForSeat(publicState, "A")
     });
   }
 
@@ -1131,7 +1746,7 @@ function broadcastMatchState(matchId) {
       type: "match_state",
       match_id: matchId,
       seat_id: "B",
-      state: publicState
+      state: publicStateForSeat(publicState, "B")
     });
   }
 }
@@ -1147,75 +1762,21 @@ function isSeatConnected(match, seatId) {
   return Boolean(client && client.ws && client.ws.readyState === WebSocket.OPEN);
 }
 
-function markSeatDisconnected(matchId, seatId, reason = "connection_lost") {
-  const match = matches.get(matchId);
-
-  if (!match || !match.seats || !match.seats[seatId]) {
-    return false;
-  }
-
-  if (match.state && match.state.game_over) {
-    return false;
-  }
-
-  const seat = match.seats[seatId];
-
-  if (seat.disconnected) {
-    return false;
-  }
-
-  seat.disconnected = true;
-  seat.disconnected_at = Date.now();
-  seat.disconnect_reason = reason;
-
-  console.log(
-    "[DISCONNECT] seat marked disconnected",
-    matchId,
-    "seat=",
-    seatId,
-    "reason=",
-    reason,
-    "grace_ms=",
-    MATCH_RECONNECT_GRACE_MS
-  );
-
-  const otherSeatId = seatId === "A" ? "B" : "A";
-  const otherSeat = match.seats[otherSeatId];
-
-  if (otherSeat) {
-    const otherClient = clients.get(otherSeat.client_id);
-    if (otherClient && otherClient.ws) {
-      safeSend(otherClient.ws, {
-        type: "opponent_connection_lost",
-        match_id: matchId,
-        message: "Opponent connection was lost. Waiting for reconnect..."
-      });
-    }
-  }
-
-  return true;
-}
-
-function getExpiredDisconnectedSeatId(match, now) {
+function hasExpiredDisconnectedSeat(match, now) {
   if (!match || !match.seats) {
-    return "";
+    return false;
   }
 
   for (const seatId of ["A", "B"]) {
     const seat = match.seats[seatId];
-
-    if (!seat || !seat.disconnected) {
-      continue;
-    }
-
-    const disconnectedAt = Number(seat.disconnected_at || 0);
-
-    if (disconnectedAt > 0 && now - disconnectedAt >= MATCH_RECONNECT_GRACE_MS) {
-      return seatId;
+    if (seat && seat.disconnected && Number(seat.disconnected_at || 0) > 0) {
+      if (now - Number(seat.disconnected_at) >= MATCH_RECONNECT_GRACE_MS) {
+        return true;
+      }
     }
   }
 
-  return "";
+  return false;
 }
 
 function sendMatchFound(matchId) {
@@ -1248,6 +1809,7 @@ function sendMatchFound(matchId) {
   const payloadA = {
     type: "match_found",
     match_id: matchId,
+    match_type: match.match_type,
     seat_id: "A",
     side: sideA,
     opponent_side: sideB,
@@ -1262,6 +1824,7 @@ function sendMatchFound(matchId) {
   const payloadB = {
     type: "match_found",
     match_id: matchId,
+    match_type: match.match_type,
     seat_id: "B",
     side: sideB,
     opponent_side: sideA,
@@ -1354,6 +1917,8 @@ function tryMakeMatch() {
 
     const match = {
       match_id: matchId,
+      match_type: entryA.match_type,
+      result_saved: false,
       state: {},
       seats: {
         A: {
@@ -1425,15 +1990,13 @@ function tryMakeMatch() {
       "display_name=",
       clientB.display_name,
       entryB.side,
+      "match_type=",
+      match.match_type,
       "first_side=",
       match.state.first_player_side,
       "first_seat=",
       match.state.first_player_seat
     );
-
-    if (clientA.user_id === clientB.user_id) {
-      console.log("[MATCH] Same user test match allowed. user_id=", clientA.user_id);
-    }
 
     sendMatchFound(matchId);
   }
@@ -1454,11 +2017,31 @@ function tickMatchTimers() {
         continue;
       }
 
-      const expiredSeatId = getExpiredDisconnectedSeatId(match, now);
-      if (expiredSeatId) {
-        finalizeDisconnectWin(matchId, expiredSeatId, "reconnect_timeout");
+      if (hasExpiredDisconnectedSeat(match, now)) {
+        const disconnectedSeats = ["A", "B"].filter((seatId) => !isSeatConnected(match, seatId));
+        if (disconnectedSeats.length === 1) {
+          const loserSeat = disconnectedSeats[0];
+          const winnerSeat = loserSeat === "A" ? "B" : "A";
+          match.state.game_over = true;
+          match.state.winner_seat = winnerSeat;
+          match.state.loser_seat = loserSeat;
+          match.state.status_message = "Opponent disconnected.";
+          match.state.result_reason = "disconnect";
+        }
+        for (const seatId of ["A", "B"]) {
+          if (isSeatConnected(match, seatId)) {
+            const client = clients.get(match.seats[seatId].client_id);
+            safeSend(client.ws, {
+              type: "opponent_left",
+              match_id: matchId,
+              message: "Opponent did not reconnect in time."
+            });
+          }
+        }
+        destroyMatch(matchId, "Reconnection grace period expired.", disconnectedSeats.length === 1 ? "disconnect" : "server_error");
         continue;
       }
+
       if (!isSeatConnected(match, "A") && !isSeatConnected(match, "B")) {
         match.last_timer_update_at = now;
         continue;
@@ -1530,7 +2113,7 @@ function tickMatchTimers() {
       broadcastMatchState(matchId);
 
       if (match.state && match.state.game_over) {
-        destroyMatch(matchId, "Match finished by timer.");
+        destroyMatch(matchId, "Match finished by timer.", "normal");
       }
     } catch (error) {
       console.error(
@@ -1542,129 +2125,16 @@ function tickMatchTimers() {
   }
 }
 
-function tickClientLiveness() {
-  const now = Date.now();
-
-  for (const [clientId, client] of clients.entries()) {
-    if (!client || client.role !== "client") {
-      continue;
-    }
-
-    if (!client.ws || client.ws.readyState !== WebSocket.OPEN) {
-      continue;
-    }
-
-    const lastSeenAt = Number(client.last_seen_at || client.connected_at || now);
-    const staleMs = now - lastSeenAt;
-
-    if (staleMs < CLIENT_LIVENESS_TIMEOUT_MS) {
-      continue;
-    }
-
-    console.log(
-      "[DISCONNECT] heartbeat stale",
-      clientId,
-      "stale_ms=",
-      staleMs,
-      "match=",
-      client.match_id || "",
-      "seat=",
-      client.seat_id || ""
-    );
-
-    if (client.match_id && client.seat_id) {
-      markSeatDisconnected(client.match_id, client.seat_id, "heartbeat_timeout");
-    } else {
-      removeClientFromQueue(clientId);
-    }
-
-    try {
-      client.ws.terminate();
-    } catch (_error) {
-      // Ignore termination errors.
-    }
-  }
-}
-
-function finalizeDisconnectWin(matchId, disconnectedSeatId, reason = "reconnect_timeout") {
-  const match = matches.get(matchId);
-
-  if (!match || !match.state || !match.seats) {
-    return false;
-  }
-
-  if (match.finalized || match.state.game_over) {
-    console.log("[DISCONNECT] finalize skipped; already ended", matchId, "reason=", reason);
-    return false;
-  }
-
-  if (disconnectedSeatId !== "A" && disconnectedSeatId !== "B") {
-    return false;
-  }
-
-  const winnerSeatId = disconnectedSeatId === "A" ? "B" : "A";
-  const winnerSeat = match.seats[winnerSeatId];
-
-  match.finalized = true;
-  match.state = normalizeAuthoritativeState(match.state);
-  match.state.game_over = true;
-  match.state.winner_seat = winnerSeatId;
-  match.state.loser_seat = disconnectedSeatId;
-  match.state.status_message = "Opponent did not reconnect. You win.";
-  match.state.turn_timer_active = false;
-  match.state.turn_timer_timeout_handled = true;
-
-  if (Array.isArray(match.state.battle_log_messages)) {
-    match.state.battle_log_messages.push("Opponent did not reconnect. " + winnerSeatId + " wins.");
-  }
-
-  if (Array.isArray(match.state.log)) {
-    match.state.log.push("Opponent did not reconnect. " + winnerSeatId + " wins.");
-  }
-
-  const publicState = getPublicBattleState(match);
-  const winnerClient = winnerSeat ? clients.get(winnerSeat.client_id) : null;
-
-  if (winnerClient && winnerClient.ws) {
-    safeSend(winnerClient.ws, {
-      type: "match_state",
-      match_id: matchId,
-      seat_id: winnerSeatId,
-      state: publicState
-    });
-
-    safeSend(winnerClient.ws, {
-      type: "opponent_left",
-      match_id: matchId,
-      result: "win",
-      reason,
-      winner_seat: winnerSeatId,
-      loser_seat: disconnectedSeatId,
-      message: "Opponent did not reconnect. You win."
-    });
-  }
-
-  console.log(
-    "[DISCONNECT] opponent win finalized",
-    matchId,
-    "winner=",
-    winnerSeatId,
-    "loser=",
-    disconnectedSeatId,
-    "reason=",
-    reason
-  );
-
-  destroyMatch(matchId, "Match finished by disconnect reconnect timeout.");
-  return true;
-}
-
-function destroyMatch(matchId, reason = "Match destroyed.") {
+function destroyMatch(matchId, reason = "Match destroyed.", endedReason = "server_error") {
   const match = matches.get(matchId);
 
   if (!match) {
     return;
   }
+
+  finalizeMatch(match, endedReason).catch((error) => {
+    console.error("[MATCH FINALIZE ERROR]", matchId, error && error.stack ? error.stack : error);
+  });
 
   const clientA = match.seats && match.seats.A ? clients.get(match.seats.A.client_id) : null;
   const clientB = match.seats && match.seats.B ? clients.get(match.seats.B.client_id) : null;
@@ -1692,7 +2162,6 @@ function destroyMatch(matchId, reason = "Match destroyed.") {
 // WebSocket
 // ============================================================================
 async function handleClientMessage(client, message) {
-  client.last_seen_at = Date.now();
   const type = String(message.type || "");
 
   switch (type) {
@@ -1709,6 +2178,7 @@ async function handleClientMessage(client, message) {
       client.username = user.username;
       client.display_name = user.display_name;
       client.is_authenticated = true;
+      await ensureUserProgression(client.user_id);
 
       safeSend(client.ws, { type: "auth_ok", user });
       console.log(
@@ -1730,14 +2200,34 @@ async function handleClientMessage(client, message) {
 
       const deckData = message.deck_data || {};
       const validationError = validateDeckData(deckData);
+      const matchType = normalizeMatchType(message.match_type);
 
       if (validationError) {
         sendError(client.ws, validationError);
         return;
       }
+      const ownershipError = await validateOwnedDeckData(client.user_id, deckData);
+      if (ownershipError) {
+        sendError(client.ws, ownershipError);
+        return;
+      }
+
+      if (!matchType) {
+        sendError(client.ws, "match_type must be casual or ranked.");
+        return;
+      }
+
+      if (client.match_id) {
+        sendError(client.ws, "Leave the active match before entering another queue.");
+        return;
+      }
+
+      if (hasOtherQueueOrMatchForUser(client.user_id, client.client_id)) {
+        sendError(client.ws, "This account is already queued or in a match.");
+        return;
+      }
 
       removeClientFromQueue(client.client_id);
-      destroyMatchesForClient(client.client_id, "Client re-entered queue.");
       client.queued = true;
       client.match_id = "";
       client.seat_id = "";
@@ -1746,6 +2236,8 @@ async function handleClientMessage(client, message) {
 
       queue.push({
         client_id: client.client_id,
+        user_id: client.user_id,
+        match_type: matchType,
         side,
         deck_data: deckData,
         joined_at: Date.now()
@@ -1760,6 +2252,8 @@ async function handleClientMessage(client, message) {
         client.display_name,
         "side=",
         side,
+        "match_type=",
+        matchType,
         "queue=",
         queue.length
       );
@@ -1767,7 +2261,8 @@ async function handleClientMessage(client, message) {
       safeSend(client.ws, {
         type: "queue_joined",
         side,
-        queue_size: queue.length
+        match_type: matchType,
+        queue_size: queue.filter((entry) => entry.match_type === matchType).length
       });
 
       tryMakeMatch();
@@ -1830,6 +2325,7 @@ async function handleClientMessage(client, message) {
       safeSend(client.ws, {
         type: "match_rejoined",
         match_id: matchId,
+        match_type: match.match_type,
         seat_id: seatId,
         side: seat.side,
         opponent_side: otherSeat.side,
@@ -1981,10 +2477,13 @@ async function handleClientMessage(client, message) {
         hand_index: payload.hand_index ?? payload.handIndex ?? payload.index ?? null
       }));
 
+      if (match.state && match.state.game_over) {
+        match.state.result_reason = action === "surrender" ? "surrender" : "normal";
+      }
       broadcastMatchState(matchId);
 
       if (match.state && match.state.game_over) {
-        destroyMatch(matchId, "Match finished.");
+        destroyMatch(matchId, "Match finished.", action === "surrender" ? "surrender" : "normal");
       }
 
       return;
@@ -2034,8 +2533,58 @@ function handleDisconnect(connection) {
 
     removeClientFromQueue(client.client_id);
 
-    if (client.match_id && client.seat_id) {
-      markSeatDisconnected(client.match_id, client.seat_id, "socket_close");
+    if (client.match_id) {
+      const match = matches.get(client.match_id);
+
+      if (match) {
+        const seatId = client.seat_id;
+        const otherSeatId = seatId === "A" ? "B" : "A";
+        const otherSeat = match.seats[otherSeatId];
+
+        if (seatId && match.seats[seatId]) {
+          match.seats[seatId].disconnected = true;
+          match.seats[seatId].disconnected_at = Date.now();
+          match.state = normalizeAuthoritativeState(match.state);
+          const loserPlayer = seatId === "A" ? match.state.player1 : match.state.player2;
+          const winnerPlayer = otherSeatId === "A" ? match.state.player1 : match.state.player2;
+          if (loserPlayer) {
+            loserPlayer.hp = 0;
+          }
+          match.state.game_over = true;
+          match.state.winner_seat = otherSeatId;
+          match.state.loser_seat = seatId;
+          match.state.status_message = `${loserPlayer ? loserPlayer.name : "Opponent"} disconnected. ${winnerPlayer ? winnerPlayer.name : "Opponent"} wins.`;
+          match.state.result_reason = "disconnect";
+          if (Array.isArray(match.state.battle_log_messages)) {
+            match.state.battle_log_messages.push(match.state.status_message);
+          }
+          if (Array.isArray(match.state.log)) {
+            match.state.log.push(match.state.status_message);
+          }
+        }
+
+        console.log(
+          "[MATCH] client disconnected and loses match",
+          match.match_id,
+          "seat=",
+          seatId
+        );
+
+        if (otherSeat) {
+          const otherClient = clients.get(otherSeat.client_id);
+
+          if (otherClient && otherClient.ws) {
+            safeSend(otherClient.ws, {
+              type: "opponent_connection_lost",
+              match_id: match.match_id,
+              message: "Opponent connection was lost.",
+              state: getPublicBattleState(match)
+            });
+          }
+        }
+        broadcastMatchState(match.match_id);
+        destroyMatch(match.match_id, "Client disconnected.", "disconnect");
+      }
     }
 
     clients.delete(client.client_id);
@@ -2128,9 +2677,7 @@ wss.on("connection", (ws, req) => {
     is_authenticated: false,
     queued: false,
     match_id: "",
-    seat_id: "",
-    connected_at: Date.now(),
-    last_seen_at: Date.now()
+    seat_id: ""
   };
 
   clients.set(clientId, client);
@@ -2144,8 +2691,6 @@ wss.on("connection", (ws, req) => {
 
   ws.on("message", (data) => {
     try {
-      client.last_seen_at = Date.now();
-
       const text = data.toString();
       const message = safeParse(text);
 
@@ -2165,7 +2710,6 @@ wss.on("connection", (ws, req) => {
         match_id: String(message.match_id || ""),
         seat_id: String(message.seat_id || "")
       }));
-
       Promise.resolve(handleClientMessage(client, message)).catch((error) => {
         console.error("[CLIENT MESSAGE ERROR]", clientId);
         console.error(error && error.stack ? error.stack : error);
@@ -2197,14 +2741,12 @@ wss.on("connection", (ws, req) => {
 });
 
 setInterval(tickMatchTimers, MATCH_TIMER_TICK_MS);
-setInterval(tickClientLiveness, CLIENT_LIVENESS_CHECK_MS);
-
-setInterval(tickMatchTimers, MATCH_TIMER_TICK_MS);
-setInterval(tickClientLiveness, CLIENT_LIVENESS_CHECK_MS);
 
 async function startServer() {
   if (pool) {
     await authService.ensureSchema();
+    await ensureRankedSchema();
+    await ensureProgressionSchema();
   }
 
   server.listen(PORT, () => {

@@ -23,6 +23,25 @@ function addLog(state, message) {
   S.addLog(state, String(message));
 }
 
+function drawFirstMatchingCardFromDeck(state, sourceSeat, traitName, cardType = "") {
+  const owner = U.getPlayer(state, sourceSeat);
+  if (!owner) return null;
+
+  const trait = U.normalizeLowerString(traitName || "");
+  for (let i = owner.deck.length - 1; i >= 0; i--) {
+    const card = owner.deck[i];
+    if (!card) continue;
+    if (cardType && String(card.card_type || card.type || "") !== cardType) continue;
+    if (trait && !U.hasTrait(card, trait)) continue;
+
+    owner.deck.splice(i, 1);
+    CardOps.returnCardToHand(owner, card);
+    return card;
+  }
+
+  return null;
+}
+
 function getOwnerSeatOrFallback(state, sourceCard, fallbackSeat = "") {
   const ownerSeat = U.getOwnerSeatOfCard(state, sourceCard);
   if (ownerSeat) return ownerSeat;
@@ -129,6 +148,24 @@ function resolvePendingAbilityTarget(state, sourceSeat, target, ctx = {}) {
       resolveDestroyFriendlyUnitGainStats(state, sourceSeat, sourceCard, target.owner_seat, Number(target.board_index), ability, ctx);
       break;
 
+    case C.ABILITY_EFFECT_DESTROY_ENEMY_UNIT_AND_HEAL_LEADER:
+      if (!target || target.type !== "unit") {
+        return { ok: false, state, message: "Invalid ability target." };
+      }
+      resolveDestroyEnemyUnitAndHealLeaderSelected(state, sourceSeat, sourceCard, target.owner_seat, Number(target.board_index), ability, ctx);
+      break;
+
+    case "destroy_another_unit": {
+      if (!target || target.type !== "unit") {
+        return { ok: false, state, message: "Invalid ability target." };
+      }
+      const targetUnit = U.getPlayer(state, target.owner_seat)?.board?.[Number(target.board_index)];
+      if (targetUnit && targetUnit !== sourceCard) {
+        Combat.destroyUnit(state, target.owner_seat, targetUnit, ctx);
+      }
+      break;
+    }
+
     default:
       addLog(state, `Unsupported ability effect: ${effect}.`);
       break;
@@ -221,7 +258,11 @@ function resolveBattlecryAbility(state, sourceSeat, sourceCard, ability, context
       return;
 
     case C.ABILITY_EFFECT_DESTROY_ENEMY_UNIT_AND_HEAL_LEADER:
-      resolveDestroyEnemyUnitAndHealLeader(state, sourceSeat, sourceCard, ability, ctx);
+      if (hasDestroyableEnemyUnit(state, sourceSeat)) {
+        setPendingAbilityTarget(state, sourceSeat, sourceCard, ability);
+      } else {
+        addLog(state, `${U.cardName(sourceCard)} found no valid enemy unit to destroy.`);
+      }
       return;
 
     case C.ABILITY_EFFECT_GAIN_ATTACK_FROM_ALLIED_TRAIT_ATTACK_TOTAL:
@@ -287,13 +328,80 @@ function resolveBattlecryAbility(state, sourceSeat, sourceCard, ability, context
       return;
     }
 
-    case "draw_then_bottom_random_hand": {
+    case "helmet_helmsman": {
       const owner = U.getPlayer(state, sourceSeat);
-      CardOps.drawCards(state, sourceSeat, 1);
-      if (owner && owner.hand.length > 0) {
-        const chosen = owner.hand.splice(U.randomInt(owner.hand.length), 1)[0];
-        owner.deck.unshift(chosen);
+      if (owner && CardOps.getPlayedTraitCount(owner, "marine") > 1) {
+        U.buffCardStats(sourceCard, 2, 2);
       }
+      return;
+    }
+
+    case "the_captain_on_fire":
+      setPendingAbilityTarget(state, sourceSeat, sourceCard, { effect: "destroy_another_unit", target: C.ABILITY_TARGET_ANY_UNIT });
+      return;
+
+    case "the_hieroglyphic_scribe": {
+      const Effects = lazyEffects();
+      if (Effects && typeof Effects.resolveHieroglyphicScribe === "function") {
+        Effects.resolveHieroglyphicScribe(state, sourceSeat, sourceCard);
+      }
+      return;
+    }
+
+    case "crystal_ball": {
+      const Effects = lazyEffects();
+      if (Effects && typeof Effects.resolveCrystalBall === "function") {
+        Effects.resolveCrystalBall(state, sourceSeat, sourceCard);
+      }
+      return;
+    }
+
+    case "the_acolyte_of_dreams": {
+      const expireTurn = Number(state.turn_number || 1) + 2;
+      for (const seat of [C.SEAT_A, C.SEAT_B]) {
+        const player = U.getPlayer(state, seat);
+        if (!player) continue;
+        for (const unit of U.ensureArray(player.board)) {
+          if (!unit || !U.isUnit(unit) || U.hasTrait(unit, "prophet")) continue;
+          U.addTemporaryKeywordToUnit(unit, C.KEYWORD_IMMOBILE, expireTurn);
+        }
+      }
+      return;
+    }
+
+    case "the_believer_of_souls": {
+      const owner = U.getPlayer(state, sourceSeat);
+      if (!owner) return;
+      const amount = owner.graveyard.filter(card => U.isUnit(card)).length;
+      Combat.healPlayer(state, sourceSeat, amount);
+      return;
+    }
+
+    case "draw_then_choose_bottom_hand": {
+      CardOps.drawCards(state, sourceSeat, 1);
+      const Effects = lazyEffects();
+      if (Effects && typeof Effects.resolveRatatoskrHandSelection === "function") {
+        Effects.resolveRatatoskrHandSelection(state, sourceSeat, sourceCard);
+      }
+      return;
+    }
+
+    case "curse_random_enemy_hand": {
+      const Effects = lazyEffects();
+      const enemySeat = U.otherSeat(sourceSeat);
+      const enemy = U.getPlayer(state, enemySeat);
+      if (!Effects || !enemy || enemy.hand.length <= 0) return;
+      Effects.beginHandSelection(
+        state,
+        sourceSeat,
+        "candle_bearer_curse_enemy_hand",
+        sourceCard,
+        enemy.hand.map((_card, index) => index),
+        "Choose an enemy hand card to give Cursed.",
+        "hand",
+        enemySeat,
+        ability
+      );
       return;
     }
 
@@ -462,6 +570,11 @@ function resolveTurnStartAbility(state, sourceSeat, sourceCard, ability, ctx = {
       destroyLowestHealthEnemyUnitAtTurnStart(state, sourceSeat, sourceCard, ability, ctx);
       return;
 
+    case "draw_then_destroy_self":
+      CardOps.drawCards(state, sourceSeat, Number(ability.amount || 2));
+      Combat.destroyUnit(state, sourceSeat, sourceCard, ctx);
+      return;
+
     default:
       addLog(state, `${U.cardName(sourceCard)} has unknown turn_start effect: ${effect}.`);
   }
@@ -484,6 +597,7 @@ function resolveTurnEndTriggers(state, seatId, ctx = {}) {
 
     for (const ability of getAbilitiesByTrigger(sourceCard, C.TRIGGER_TURN_END)) {
       resolveTurnEndAbility(state, seatId, sourceCard, ability, ctx);
+      if (state.selecting_hand_card) return;
     }
   }
 }
@@ -508,11 +622,26 @@ function resolveTurnEndAbility(state, sourceSeat, sourceCard, ability, ctx = {})
       buffSelfFromAbility(state, sourceSeat, sourceCard, ability, ctx);
       return;
 
+    case "damage_enemy_leader_by_board_trait_count": {
+      const owner = U.getPlayer(state, sourceSeat);
+      const enemySeat = U.otherSeat(sourceSeat);
+      if (!owner) return;
+      const trait = U.normalizeLowerString(ability.trait || "gadget");
+      const amount = owner.board.filter(card => U.isUnit(card) && U.hasTrait(card, trait)).length;
+      if (amount > 0) Combat.damagePlayer(state, enemySeat, amount);
+      return;
+    }
+
     case "heal_leader":
       Combat.healPlayer(state, sourceSeat, Number(ability.amount || 2));
       return;
 
     case "destroy_self":
+      Combat.destroyUnit(state, sourceSeat, sourceCard, ctx);
+      return;
+
+    case "destroy_self_once":
+      sourceCard.abilities = U.ensureArray(sourceCard.abilities).filter(item => item !== ability);
       Combat.destroyUnit(state, sourceSeat, sourceCard, ctx);
       return;
 
@@ -564,11 +693,16 @@ function resolveOnUnitPlayedAbility(state, sourceSeat, sourceCard, ability, play
 
   const effect = getAbilityEffect(ability);
   const amount = getAbilityAmount(ability, 0);
+  const flagKey = `on_unit_played_${effect}_${requiredTrait}`;
+
+  sourceCard.once_per_turn_flags = sourceCard.once_per_turn_flags || {};
+  if (ability.once_per_turn && sourceCard.once_per_turn_flags[flagKey]) return;
 
   switch (effect) {
     case C.ABILITY_EFFECT_DRAW:
       if (amount <= 0) return;
       CardOps.drawCards(state, sourceSeat, amount);
+      if (ability.once_per_turn) sourceCard.once_per_turn_flags[flagKey] = true;
       addLog(state, `${U.cardName(sourceCard)} triggered. Drew ${amount} card(s).`);
       return;
 
@@ -638,6 +772,17 @@ function resolveOnSpellPlayedAbility(state, sourceSeat, sourceCard, ability, pla
     case C.ABILITY_EFFECT_DAMAGE_RANDOM_ENEMY_UNIT_OR_FACE:
       damageRandomEnemyUnitOrFaceOnSpellPlayed(state, sourceSeat, sourceCard, ability, ctx);
       return;
+
+    case "draw_trait_spell_from_deck_once": {
+      const flag = String(ability.flag || "music_spell_played");
+      if (sourceCard.once_per_turn_flags && sourceCard.once_per_turn_flags[flag]) return;
+      const trait = U.normalizeLowerString(ability.trait || "music");
+      if (trait && !U.hasTrait(playedSpell, trait)) return;
+      sourceCard.once_per_turn_flags = sourceCard.once_per_turn_flags || {};
+      sourceCard.once_per_turn_flags[flag] = true;
+      drawFirstMatchingCardFromDeck(state, sourceSeat, trait, C.CARD_TYPE_SPELL);
+      return;
+    }
 
     default:
       addLog(state, `Unsupported on_spell_played effect: ${effect}.`);
@@ -716,14 +861,26 @@ function resolveWhenDestroyedAbility(state, destroyedSeat, destroyedCard, abilit
         return;
       }
 
-      const targetCard = CardOps.getRandomUnitInHandWithTrait(owner, traitName);
-      if (!targetCard) {
+      const Effects = lazyEffects();
+      const candidateIndexes = owner.hand
+        .map((card, index) => ({ card, index }))
+        .filter(item => U.isUnit(item.card) && U.hasTrait(item.card, traitName))
+        .map(item => item.index);
+      if (!Effects || candidateIndexes.length <= 0) {
         addLog(state, `${U.cardName(destroyedCard)} found no ${traitName} unit in hand.`);
         return;
       }
-
-      U.buffCardStats(targetCard, attackBonus, hpBonus);
-      addLog(state, `${U.cardName(destroyedCard)} gave ${U.cardName(targetCard)} +${attackBonus}/+${hpBonus}.`);
+      Effects.beginHandSelection(
+        state,
+        destroyedSeat,
+        "lone_knight_buff_hand_trait",
+        destroyedCard,
+        candidateIndexes,
+        `Choose a ${traitName} unit in your hand to buff.`,
+        "hand",
+        destroyedSeat,
+        ability
+      );
       return;
     }
 
@@ -907,6 +1064,17 @@ function resolveOnAllyUnitAttackAbility(state, sourceSeat, sourceCard, attacker,
       const hpBonus = Number(ability.hp || 0);
       U.buffCardStats(attacker, attackBonus, hpBonus);
       addLog(state, `${U.cardName(sourceCard)} gave ${U.cardName(attacker)} +${attackBonus}/+${hpBonus} before the attack.`);
+      return;
+    }
+
+    case "draw_trait_unit_from_deck_once": {
+      const flag = String(ability.flag || "music_unit_attack");
+      if (sourceCard.once_per_turn_flags && sourceCard.once_per_turn_flags[flag]) return;
+      const trait = U.normalizeLowerString(ability.trait || "music");
+      if (trait && !U.hasTrait(attacker, trait)) return;
+      sourceCard.once_per_turn_flags = sourceCard.once_per_turn_flags || {};
+      sourceCard.once_per_turn_flags[flag] = true;
+      drawFirstMatchingCardFromDeck(state, sourceSeat, trait, C.CARD_TYPE_UNIT);
       return;
     }
 
@@ -1128,20 +1296,16 @@ function buffOtherFriendlyTraitUnits(state, sourceSeat, sourceCard, ability, pha
 }
 
 function burnSpellFromHandThenBuffSelf(state, sourceSeat, sourceCard, ability) {
-  const burned = CardOps.burnRandomCardFromHand(state, sourceSeat, (card) => {
-    return card !== sourceCard && U.isSpell(card);
-  });
-
-  if (!burned) {
+  const owner = U.getPlayer(state, sourceSeat);
+  const Effects = lazyEffects();
+  const candidateIndexes = owner
+    ? owner.hand.map((card, index) => ({ card, index })).filter(item => item.card !== sourceCard && U.isSpell(item.card)).map(item => item.index)
+    : [];
+  if (!Effects || candidateIndexes.length <= 0) {
     addLog(state, `${U.cardName(sourceCard)} found no spell to burn.`);
     return;
   }
-
-  const attackBonus = Number(ability.attack || 0);
-  const hpBonus = Number(ability.hp || 0);
-
-  U.buffCardStats(sourceCard, attackBonus, hpBonus);
-  addLog(state, `${U.cardName(sourceCard)} burned ${U.cardName(burned)} and gained +${attackBonus}/+${hpBonus}.`);
+  Effects.beginHandSelection(state, sourceSeat, "spellblader_burn_spell", sourceCard, candidateIndexes, "Choose a spell in your hand to burn.", "hand", sourceSeat, ability);
 }
 
 function addCopiesToOwnersDeck(state, sourceSeat, sourceCard, ability, ctx = {}) {
@@ -1250,38 +1414,28 @@ function resolveRemoveImmobileSetAttackForTrait(state, sourceSeat, sourceCard, a
   addLog(state, `${U.cardName(sourceCard)} removed Immobile from allied ${traitName} units and set their attack to ${attackValue}. Affected units: ${affected}.`);
 }
 
-function resolveDestroyEnemyUnitAndHealLeader(state, sourceSeat, sourceCard, ability, ctx = {}) {
+function hasDestroyableEnemyUnit(state, sourceSeat) {
   const enemySeat = U.otherSeat(sourceSeat);
   const enemy = U.getPlayer(state, enemySeat);
+  return Boolean(enemy && enemy.board.some(unit => unit && U.isUnit(unit) && !U.isUntrickableUnit(enemy, unit)));
+}
 
-  if (!enemy || enemy.board.length <= 0) {
-    addLog(state, `${U.cardName(sourceCard)} found no enemy unit to destroy.`);
+function resolveDestroyEnemyUnitAndHealLeaderSelected(state, sourceSeat, sourceCard, targetSeat, unitIndex, ability, ctx = {}) {
+  const enemySeat = U.otherSeat(sourceSeat);
+  const enemy = U.getPlayer(state, enemySeat);
+  if (!enemy || targetSeat !== enemySeat || unitIndex < 0 || unitIndex >= enemy.board.length) {
+    addLog(state, `${U.cardName(sourceCard)} received an invalid enemy unit target.`);
     return;
   }
 
-  let targetIndex = -1;
-  let highestValue = -999999;
-
-  for (let i = 0; i < enemy.board.length; i++) {
-    const unit = enemy.board[i];
-    if (!unit || !U.isUnit(unit)) continue;
-    if (U.isUntrickableUnit(enemy, unit)) continue;
-
-    const value = Number(unit.attack || 0) + Number(unit.hp || 0) + Number(unit.armor || 0);
-
-    if (value > highestValue) {
-      highestValue = value;
-      targetIndex = i;
-    }
-  }
-
-  if (targetIndex < 0) {
+  const targetUnit = enemy.board[unitIndex];
+  if (!targetUnit || !U.isUnit(targetUnit) || U.isUntrickableUnit(enemy, targetUnit)) {
     addLog(state, `${U.cardName(sourceCard)} found no valid enemy unit to destroy.`);
     return;
   }
 
-  const destroyedName = U.cardName(enemy.board[targetIndex]);
-  Combat.destroyUnit(state, enemySeat, targetIndex, ctx);
+  const destroyedName = U.cardName(targetUnit);
+  Combat.destroyUnit(state, enemySeat, unitIndex, ctx);
 
   const healAmount = Number(ability.heal || 4);
   Combat.healPlayer(state, sourceSeat, healAmount);
@@ -1477,21 +1631,16 @@ function returnRandomHandTraitCardThenDamageAllEnemyUnits(state, sourceSeat, sou
   const traitName = U.normalizeLowerString(ability.trait || "mage");
   const damageAmount = Number(ability.amount || 3);
 
-  const index = U.findRandomIndex(owner.hand, (card) => {
-    return card && U.hasTrait(card, traitName);
-  });
-
-  if (index < 0) {
+  const Effects = lazyEffects();
+  const candidateIndexes = owner.hand
+    .map((card, index) => ({ card, index }))
+    .filter(item => item.card && U.hasTrait(item.card, traitName))
+    .map(item => item.index);
+  if (!Effects || candidateIndexes.length <= 0) {
     addLog(state, `${U.cardName(sourceCard)} found no ${traitName} card in hand.`);
     return;
   }
-
-  const returnedCard = owner.hand.splice(index, 1)[0];
-  owner.deck.push(returnedCard);
-  CardOps.shuffleArray(owner.deck);
-
-  const hitCount = Combat.dealDamageToAllEnemyUnitsForPlayer(state, sourceSeat, damageAmount, ctx);
-  addLog(state, `${U.cardName(sourceCard)} returned ${U.cardName(returnedCard)} to deck and dealt ${damageAmount} damage to all enemy units. Hit units: ${hitCount}.`);
+  Effects.beginHandSelection(state, sourceSeat, "witchcraft_trap_return_hand_trait", sourceCard, candidateIndexes, `Choose a ${traitName} card in your hand to return to your deck.`, "hand", sourceSeat, ability);
 }
 
 function removeKeywordsFromPlayedUnit(state, playedSeat, sourceCard, ability, playedCard) {
@@ -1731,6 +1880,23 @@ function resolveOnAllyUnitDestroyedTriggers(state, ownerSeat, destroyedCard, _ct
     for (const ability of U.getAbilities(sourceCard, "on_ally_unit_destroyed")) {
       if (getAbilityEffect(ability) === "buff_self_if_destroyed_trait" && U.hasTrait(destroyedCard, U.normalizeLowerString(ability.trait || ""))) {
         U.buffCardStats(sourceCard, Number(ability.attack || 0), Number(ability.hp || 0));
+      } else if (getAbilityEffect(ability) === "tax_random_enemy_hand_if_destroyed_trait" && U.hasTrait(destroyedCard, U.normalizeLowerString(ability.trait || "relic"))) {
+        const Effects = lazyEffects();
+        const enemySeat = U.otherSeat(ownerSeat);
+        const enemy = U.getPlayer(state, enemySeat);
+        if (Effects && enemy && enemy.hand.length > 0) {
+          Effects.beginHandSelection(
+            state,
+            ownerSeat,
+            "relic_undertaker_tax_enemy_hand",
+            sourceCard,
+            enemy.hand.map((_card, index) => index),
+            "Choose an enemy hand card to increase its cost.",
+            "hand",
+            enemySeat,
+            ability
+          );
+        }
       }
     }
   }

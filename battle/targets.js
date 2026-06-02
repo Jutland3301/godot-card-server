@@ -175,6 +175,18 @@ function canSpellAffectUnit(state, sourceSeat, card, targetSeat, unit) {
 
   const effectId = String(card.effect_id || "");
 
+  if (effectId === C.EFFECT_LAMENTATION_OF_LIFE) {
+    return Number(unit.attack || 0) <= 3;
+  }
+
+  if (effectId === C.EFFECT_TRANSCRIBE_OF_THE_WICKED) {
+    return Number(unit.hp || 0) < 4;
+  }
+
+  if (effectId === C.EFFECT_HEAL) {
+    return Number(unit.hp || 0) < Number(unit.max_hp || unit.hp || 0);
+  }
+
   if (
     effectId === C.EFFECT_ADD_KEYWORD ||
     effectId === C.EFFECT_DESTROY_FRIENDLY_TRAIT_UNIT_COPY_TO_HAND_BUFF ||
@@ -278,6 +290,7 @@ function hasValidPlayTargetForCard(state, sourceSeat, card) {
       effectId === C.EFFECT_ADD_KEYWORD ||
       effectId === C.EFFECT_DESTROY_FRIENDLY_TRAIT_UNIT_COPY_TO_HAND_BUFF ||
       effectId === C.EFFECT_POETRY_OF_RESILIENCE ||
+      effectId === C.EFFECT_THE_TALE_OF_BRAVERY ||
       effectId === C.EFFECT_NOBLES_OBLIGE ||
       effectId === C.EFFECT_FORBIDDEN_BOOK
     ) {
@@ -323,6 +336,10 @@ function isValidTargetForPendingSpell(state, sourceSeat, targetOwnerSeat, target
   }
 
   if (effectId === C.EFFECT_POETRY_OF_RESILIENCE) {
+    return isFriendly && targetKind === "unit";
+  }
+
+  if (effectId === C.EFFECT_THE_TALE_OF_BRAVERY) {
     return isFriendly && targetKind === "unit";
   }
 
@@ -379,7 +396,7 @@ function isValidTargetForPendingSpell(state, sourceSeat, targetOwnerSeat, target
   }
 }
 
-function isValidTargetForPendingAbility(state, sourceSeat, targetOwnerSeat, targetKind) {
+function isValidTargetForPendingAbility(state, sourceSeat, targetOwnerSeat, targetKind, targetUnit = null) {
   if (!state) return false;
 
   const ability = state.pending_ability || {};
@@ -388,6 +405,14 @@ function isValidTargetForPendingAbility(state, sourceSeat, targetOwnerSeat, targ
   const targetType = String(ability.target || "");
   const isFriendly = targetOwnerSeat === sourceSeat;
   const isEnemy = targetOwnerSeat !== sourceSeat;
+
+  if (targetKind === "unit") {
+    const owner = U.getPlayer(state, targetOwnerSeat);
+    if (!targetUnit || U.isUntrickableUnit(owner, targetUnit)) return false;
+    if (ability.trait && !U.hasTrait(targetUnit, ability.trait)) return false;
+    if (ability.damaged_only && Number(targetUnit.hp || 0) >= Number(targetUnit.max_hp || targetUnit.hp || 0)) return false;
+    if (String(ability.effect || "") === "destroy_another_unit" && targetUnit === state.pending_card) return false;
+  }
 
   switch (targetType) {
     case C.ABILITY_TARGET_ANY:
@@ -503,7 +528,8 @@ function isBoardTargetableNow(state, sourceSeat, ownerSeat, boardIndex) {
           (
             String(pendingCard.effect_id || "") === C.EFFECT_ADD_KEYWORD ||
             String(pendingCard.effect_id || "") === C.EFFECT_DESTROY_FRIENDLY_TRAIT_UNIT_COPY_TO_HAND_BUFF ||
-            String(pendingCard.effect_id || "") === C.EFFECT_POETRY_OF_RESILIENCE
+            String(pendingCard.effect_id || "") === C.EFFECT_POETRY_OF_RESILIENCE ||
+            String(pendingCard.effect_id || "") === C.EFFECT_THE_TALE_OF_BRAVERY
           )
         ) {
           if (!spellCanTargetUnitByAbilityFilter(state, sourceSeat, pendingCard, targetUnit)) {
@@ -515,7 +541,7 @@ function isBoardTargetableNow(state, sourceSeat, ownerSeat, boardIndex) {
       }
 
       case C.ACTION_ABILITY:
-        return isValidTargetForPendingAbility(state, sourceSeat, ownerSeat, "unit");
+        return isValidTargetForPendingAbility(state, sourceSeat, ownerSeat, "unit", targetPlayer.board[index]);
 
       case C.ACTION_UNIT_ATTACK:
         if (ownerSeat === currentOwnerSeat) {

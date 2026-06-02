@@ -2,6 +2,7 @@
 
 const C = require("./constants");
 const U = require("./utils");
+const Costs = require("./costs");
 
 function asNumber(value, fallback = 0) {
   const n = Number(value);
@@ -58,6 +59,7 @@ function normalizeCard(card) {
   card.display_name = String(card.display_name || card.card_name);
   card.card_type = String(card.card_type || card.type || C.CARD_TYPE_SPELL);
   card.cost = asNumber(card.cost, 0);
+  card.base_cost = asNumber(card.base_cost, card.cost);
   card.power = asNumber(card.power, 0);
   card.effect_id = String(card.effect_id || C.EFFECT_NONE);
   card.target_type = String(card.target_type || C.TARGET_NONE);
@@ -82,7 +84,7 @@ function normalizeCard(card) {
   card.cannot_attack_leader = asBoolean(card.cannot_attack_leader, false);
   card.flying_fortress_prevent_used_this_turn = asBoolean(card.flying_fortress_prevent_used_this_turn, false);
 
-  card.rarity = String(card.rarity || "common");
+  card.rarity = String(card.rarity || "silver");
   card.tags = normalizeArray(card.tags).map(item => String(item || "")).filter(Boolean);
   card.keywords = normalizeArray(card.keywords).map(item => String(item || "").toLowerCase()).filter(Boolean);
   card.traits = normalizeArray(card.traits).map(item => String(item || "").toLowerCase()).filter(Boolean);
@@ -128,6 +130,119 @@ function normalizeCardArray(cards) {
   return result;
 }
 
+function getCardLookupId(card) {
+  if (!card || typeof card !== "object") return "";
+
+  return String(
+    card.card_id ||
+    card.cardId ||
+    card.id ||
+    card.card_name ||
+    card.cardName ||
+    card.name ||
+    card.display_name ||
+    ""
+  ).trim();
+}
+
+function isStalePlaceholderCard(card, canonicalCard) {
+  if (!card || !canonicalCard) return false;
+
+  const traits = normalizeArray(card.traits);
+  const abilities = normalizeArray(card.abilities);
+  const looksLikePlaceholder =
+    asNumber(card.cost, 0) === 0 &&
+    asNumber(card.attack, 0) === 0 &&
+    asNumber(card.hp, 0) <= 1 &&
+    asNumber(card.max_hp, card.hp) <= 1 &&
+    String(card.description || "") === "" &&
+    traits.length <= 0 &&
+    abilities.length <= 0;
+
+  const canonicalLooksReal =
+    asNumber(canonicalCard.cost, 0) !== asNumber(card.cost, 0) ||
+    asNumber(canonicalCard.attack, 0) !== asNumber(card.attack, 0) ||
+    asNumber(canonicalCard.max_hp, canonicalCard.hp) !== asNumber(card.max_hp, card.hp) ||
+    String(canonicalCard.description || "") !== "" ||
+    normalizeArray(canonicalCard.traits).length > 0 ||
+    normalizeArray(canonicalCard.abilities).length > 0;
+
+  return looksLikePlaceholder && canonicalLooksReal;
+}
+
+function hydrateKnownCard(card, makeCardFromId) {
+  if (!card || typeof card !== "object" || typeof makeCardFromId !== "function") {
+    return card || null;
+  }
+
+  const lookupId = getCardLookupId(card);
+  if (!lookupId) return card;
+
+  const canonicalCard = makeCardFromId(lookupId);
+  if (!isStalePlaceholderCard(card, canonicalCard)) {
+    return card;
+  }
+
+  const runtime = {
+    can_attack: card.can_attack,
+    exhausted: card.exhausted,
+    summoned_this_turn: card.summoned_this_turn,
+    has_attacked_this_turn: card.has_attacked_this_turn,
+    attacks_this_turn: card.attacks_this_turn,
+    max_attacks_per_turn: card.max_attacks_per_turn,
+    temporary_keywords: U.deepClone(card.temporary_keywords || {}),
+    once_per_turn_flags: U.deepClone(card.once_per_turn_flags || {}),
+    cursed_after_play_damage: asNumber(card.cursed_after_play_damage, 0),
+    cursed_after_attack_damage: asNumber(card.cursed_after_attack_damage, 0),
+    cursed_on_draw_damage: asNumber(card.cursed_on_draw_damage, 0),
+    death_damage_owner_leader: asNumber(card.death_damage_owner_leader, 0)
+  };
+
+  Object.assign(card, U.deepClone(canonicalCard), runtime);
+  return normalizeCard(card);
+}
+
+function hydrateKnownCardArray(cards, makeCardFromId) {
+  const result = normalizeArray(cards);
+
+  for (let i = 0; i < result.length; i++) {
+    if (result[i] && typeof result[i] === "object") {
+      result[i] = hydrateKnownCard(result[i], makeCardFromId);
+    }
+  }
+
+  return result;
+}
+
+function hydrateKnownCardDefinitions(state, makeCardFromId) {
+  if (!state || typeof state !== "object" || typeof makeCardFromId !== "function") {
+    return state;
+  }
+
+  normalizeState(state);
+
+  for (const player of [state.player1, state.player2]) {
+    if (!player) continue;
+
+    player.deck = hydrateKnownCardArray(player.deck, makeCardFromId);
+    player.hand = hydrateKnownCardArray(player.hand, makeCardFromId);
+    player.board = hydrateKnownCardArray(player.board, makeCardFromId);
+    player.graveyard = hydrateKnownCardArray(player.graveyard, makeCardFromId);
+    player.phantom_death_history = hydrateKnownCardArray(player.phantom_death_history, makeCardFromId);
+
+    if (player.last_spell_cast && typeof player.last_spell_cast === "object") {
+      player.last_spell_cast = hydrateKnownCard(player.last_spell_cast, makeCardFromId);
+    }
+  }
+
+  if (state.pending_card && typeof state.pending_card === "object") {
+    state.pending_card = hydrateKnownCard(state.pending_card, makeCardFromId);
+  }
+
+  syncLegacy(state);
+  return state;
+}
+
 function normalizePlayer(player, fallbackOwnerId = "") {
   if (!player || typeof player !== "object") {
     player = {};
@@ -159,6 +274,8 @@ function normalizePlayer(player, fallbackOwnerId = "") {
   }
 
   player.played_trait_counts = normalizeObject(player.played_trait_counts);
+  player.prophecy_ouroboros_active = asBoolean(player.prophecy_ouroboros_active, false);
+  player.prophet_zero_cost_used_this_turn = asBoolean(player.prophet_zero_cost_used_this_turn, false);
   player.animal_deaths_this_game = asNumber(player.animal_deaths_this_game, 0);
   player.phantom_death_history = normalizeCardArray(player.phantom_death_history);
 
@@ -269,8 +386,11 @@ function normalizeState(state) {
 
   state.pending_hand_selection_effect = String(state.pending_hand_selection_effect || "");
   state.pending_hand_selection_owner = String(state.pending_hand_selection_owner || "");
+  state.pending_card_selection_owner = String(state.pending_card_selection_owner || state.pending_hand_selection_owner || "");
   state.pending_card_selection_zone = state.pending_card_selection_zone === "graveyard" ? "graveyard" : "hand";
   state.pending_hand_candidate_indexes = normalizeArray(state.pending_hand_candidate_indexes).map(index => asNumber(index, -1)).filter(index => index >= 0);
+  state.pending_end_turn_after_hand_selection = asBoolean(state.pending_end_turn_after_hand_selection, false);
+  state.pending_end_turn_seat = String(state.pending_end_turn_seat || "");
 
   state.pending_deaths = normalizeArray(state.pending_deaths);
   state.pending_summons = normalizeArray(state.pending_summons);
@@ -370,6 +490,7 @@ function clearSelection(state) {
 
   state.pending_hand_selection_effect = "";
   state.pending_hand_selection_owner = "";
+  state.pending_card_selection_owner = "";
   state.pending_card_selection_zone = "hand";
   state.pending_hand_candidate_indexes = [];
 }
@@ -389,6 +510,7 @@ function beginTurnBasics(state, seatId) {
 
   clearSelection(state);
 
+  player.prophet_zero_cost_used_this_turn = false;
   player.max_mana = Math.min(C.MAX_MANA, asNumber(player.max_mana, 0) + C.MANA_GAIN_PER_TURN);
   player.mana = player.max_mana;
 
@@ -444,16 +566,18 @@ function markGameOver(state, winnerSeat, loserSeat, reason = "") {
   }
 }
 
-function serializeCard(card) {
+function serializeCard(card, owner = null) {
   const normalized = normalizeCard(card);
   if (!normalized) return null;
 
-  return {
+  const data = {
     card_id: normalized.card_id,
     card_name: normalized.card_name,
     display_name: normalized.display_name,
     card_type: normalized.card_type,
     cost: normalized.cost,
+    base_cost: normalized.base_cost,
+    current_cost: normalized.cost,
     power: normalized.power,
     attack: normalized.attack,
     hp: normalized.hp,
@@ -490,11 +614,18 @@ function serializeCard(card) {
     play_sfx: normalized.play_sfx,
     death_sfx: normalized.death_sfx
   };
+
+  if (owner) {
+    data.play_cost = Costs.getCardPlayCost(owner, normalized);
+    data.effective_cost = data.play_cost;
+  }
+
+  return data;
 }
 
-function serializeCardArray(cards) {
+function serializeCardArray(cards, owner = null) {
   return normalizeArray(cards)
-    .map(card => serializeCard(card))
+    .map(card => serializeCard(card, owner))
     .filter(card => card !== null);
 }
 
@@ -511,7 +642,7 @@ function serializePlayer(player) {
     max_mana: normalized.max_mana,
 
     deck: serializeCardArray(normalized.deck),
-    hand: serializeCardArray(normalized.hand),
+    hand: serializeCardArray(normalized.hand, normalized),
     board: serializeCardArray(normalized.board),
     graveyard: serializeCardArray(normalized.graveyard),
 
@@ -519,6 +650,8 @@ function serializePlayer(player) {
     scholar_cards_played_this_game: normalized.scholar_cards_played_this_game,
     scholar_played_count: normalized.scholar_played_count,
     played_trait_counts: U.deepClone(normalized.played_trait_counts),
+    prophecy_ouroboros_active: normalized.prophecy_ouroboros_active,
+    prophet_zero_cost_used_this_turn: normalized.prophet_zero_cost_used_this_turn,
     animal_deaths_this_game: normalized.animal_deaths_this_game,
     phantom_death_history: serializeCardArray(normalized.phantom_death_history),
     last_spell_cast: normalized.last_spell_cast ? serializeCard(normalized.last_spell_cast) : null
@@ -556,8 +689,11 @@ function makePublicState(state) {
 
     pending_hand_selection_effect: state.pending_hand_selection_effect,
     pending_hand_selection_owner: state.pending_hand_selection_owner,
+    pending_card_selection_owner: state.pending_card_selection_owner,
     pending_card_selection_zone: state.pending_card_selection_zone,
     pending_hand_candidate_indexes: state.pending_hand_candidate_indexes.slice(),
+    pending_end_turn_after_hand_selection: state.pending_end_turn_after_hand_selection,
+    pending_end_turn_seat: state.pending_end_turn_seat,
 
     turn_time_left: state.turn_time_left,
     turn_timer_active: state.turn_timer_active,
@@ -594,6 +730,7 @@ module.exports = {
 
   normalizeCard,
   normalizeCardArray,
+  hydrateKnownCardDefinitions,
   normalizePlayer,
   normalizeState,
   syncLegacy,
