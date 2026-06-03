@@ -4,7 +4,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node tests/leader_attack_smoke.js && node tests/card_selection_smoke.js && node tests/coin_flip_smoke.js && node tests/god_card_hydration_smoke.js && node tests/cost_payment_smoke.js && node tests/progression_catalog_smoke.js && node tests/registration_progression_smoke.js && node tests/progression_sync_smoke.js"
+    "test": "node tests/leader_attack_smoke.js && node tests/card_selection_smoke.js && node tests/coin_flip_smoke.js && node tests/god_card_hydration_smoke.js && node tests/cost_payment_smoke.js && node tests/progression_catalog_smoke.js && node tests/registration_progression_smoke.js && node tests/progression_sync_smoke.js",
+    "test:aircraft": "node aircraft_battle/aircraft_smoke_test.js",
+    "test:aircraft:schema": "node aircraft_battle/aircraft_schema_parity_test.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

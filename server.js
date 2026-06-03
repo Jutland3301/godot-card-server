@@ -10,6 +10,12 @@ const { createAuthService } = require("./auth_service");
 const { createAuthRoutes } = require("./auth_routes");
 const { createAuthMiddleware } = require("./auth_middleware");
 const { chooseFirstPlayer } = require("./battle/coin_flip");
+const {
+  createAircraftMatchState,
+  applyAircraftAction,
+  serializeAircraftState,
+  validateAircraftState
+} = require("./aircraft_battle/aircraft_server_adapter");
 
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || "";
@@ -27,6 +33,7 @@ const INITIAL_GOLD = 1000;
 const MATCH_WIN_GOLD = 100;
 const MATCH_TIMER_TICK_MS = 250;
 const MATCH_RECONNECT_GRACE_MS = Number(process.env.MATCH_RECONNECT_GRACE_MS || 120000);
+const QUEUE_ENTRY_TTL_MS = 5 * 60 * 1000;
 const MATCH_TYPE_CASUAL = "casual";
 const MATCH_TYPE_RANKED = "ranked";
 const INITIAL_RATING = 1500;
@@ -55,6 +62,8 @@ const clients = new Map();
 const hosts = new Map();
 const queue = [];
 const matches = new Map();
+const aircraftQueue = [];
+const aircraftMatches = new Map();
 
 function makeId(prefix, number) {
   return `${prefix}_${number}_${Date.now()}`;
@@ -1285,6 +1294,46 @@ function removeClientFromQueue(clientId) {
   }
 }
 
+function resetClientMatchmakingState(client) {
+  if (!client) return;
+  client.queued = false;
+  client.match_id = "";
+  client.seat_id = "";
+}
+
+function pruneStaleQueueEntries(reason = "unspecified") {
+  const now = Date.now();
+
+  for (let i = queue.length - 1; i >= 0; i--) {
+    const entry = queue[i];
+    const clientId = String(entry && entry.client_id || "");
+    const client = clients.get(clientId);
+    let staleReason = "";
+
+    if (!entry || !clientId) {
+      staleReason = "invalid_entry";
+    } else if (!client) {
+      staleReason = "missing_client";
+    } else if (!client.ws || client.ws.readyState !== WebSocket.OPEN) {
+      staleReason = "socket_not_open";
+    } else if (Number(entry.user_id || 0) !== Number(client.user_id || 0)) {
+      staleReason = "user_id_mismatch";
+    } else if (client.match_id) {
+      staleReason = "client_already_in_match";
+    } else if (now - Number(entry.joined_at || 0) >= QUEUE_ENTRY_TTL_MS) {
+      staleReason = "ttl_expired";
+    }
+
+    if (!staleReason) continue;
+
+    queue.splice(i, 1);
+    if (client && !queue.some((queuedEntry) => queuedEntry && queuedEntry.client_id === clientId)) {
+      client.queued = false;
+    }
+    console.log("[QUEUE PRUNE]", "reason=", reason, "stale=", staleReason, "client_id=", clientId, "user_id=", entry ? entry.user_id : "");
+  }
+}
+
 function hasOtherQueueOrMatchForUser(userId, clientId) {
   const targetUserId = Number(userId || 0);
   const ignoredClientId = String(clientId || "");
@@ -1784,7 +1833,7 @@ function sendMatchFound(matchId) {
 
   if (!match) {
     console.error("[MATCH FOUND SEND ERROR] match not found", matchId);
-    return;
+    return false;
   }
 
   let publicState = {};
@@ -1881,9 +1930,13 @@ function sendMatchFound(matchId) {
       state: publicState
     });
   }
+
+  return sentA && sentB;
 }
 
 function tryMakeMatch() {
+  pruneStaleQueueEntries("try_make_match");
+
   while (queue.length >= 2) {
     const pair = findQueuePair();
 
@@ -1902,14 +1955,23 @@ function tryMakeMatch() {
     const clientB = clients.get(entryB.client_id);
 
     if (!clientA || !clientB) {
+      resetClientMatchmakingState(clientA);
+      resetClientMatchmakingState(clientB);
+      console.log("[MATCH CREATE CLEANUP]", "reason=missing_client", "A=", entryA.client_id, "B=", entryB.client_id);
       continue;
     }
 
     if (!clientA.ws || clientA.ws.readyState !== WebSocket.OPEN) {
+      resetClientMatchmakingState(clientA);
+      resetClientMatchmakingState(clientB);
+      console.log("[MATCH CREATE CLEANUP]", "reason=A_socket_not_open", "A=", entryA.client_id, "B=", entryB.client_id);
       continue;
     }
 
     if (!clientB.ws || clientB.ws.readyState !== WebSocket.OPEN) {
+      resetClientMatchmakingState(clientA);
+      resetClientMatchmakingState(clientB);
+      console.log("[MATCH CREATE CLEANUP]", "reason=B_socket_not_open", "A=", entryA.client_id, "B=", entryB.client_id);
       continue;
     }
 
@@ -1955,8 +2017,8 @@ function tryMakeMatch() {
         error && error.stack ? error.stack : error
       );
 
-      clientA.queued = false;
-      clientB.queued = false;
+      resetClientMatchmakingState(clientA);
+      resetClientMatchmakingState(clientB);
 
       sendError(clientA.ws, "Server failed while creating match.");
       sendError(clientB.ws, "Server failed while creating match.");
@@ -1998,11 +2060,20 @@ function tryMakeMatch() {
       match.state.first_player_seat
     );
 
-    sendMatchFound(matchId);
+    if (!sendMatchFound(matchId)) {
+      matches.delete(matchId);
+      resetClientMatchmakingState(clientA);
+      resetClientMatchmakingState(clientB);
+      console.log("[MATCH CREATE CLEANUP]", "reason=match_found_send_failed", "match_id=", matchId);
+      sendError(clientA.ws, "Match could not start because a client disconnected.");
+      sendError(clientB.ws, "Match could not start because a client disconnected.");
+    }
   }
 }
 
 function tickMatchTimers() {
+  pruneStaleQueueEntries("timer_tick");
+  expireDisconnectedAircraftMatches();
   const now = Date.now();
 
   for (const [matchId, match] of matches.entries()) {
@@ -2159,6 +2230,289 @@ function destroyMatch(matchId, reason = "Match destroyed.", endedReason = "serve
 }
 
 // ============================================================================
+// Aircraft WebSocket MVP
+// ============================================================================
+function normalizeAircraftId(value) {
+  const aircraftId = String(value || "iron_gull");
+  if (["swift_needle", "iron_gull", "bastion_tortoise", "crown_cathedral"].includes(aircraftId)) {
+    return aircraftId;
+  }
+  return "";
+}
+
+function removeClientFromAircraftQueue(clientId) {
+  for (let i = aircraftQueue.length - 1; i >= 0; i--) {
+    if (aircraftQueue[i].client_id === clientId) {
+      aircraftQueue.splice(i, 1);
+    }
+  }
+}
+
+function findAircraftSeat(match, clientId) {
+  if (!match || !match.players) return "";
+  if (match.players.A && match.players.A.client_id === clientId) return "A";
+  if (match.players.B && match.players.B.client_id === clientId) return "B";
+  return "";
+}
+
+function getAircraftClient(match, seatId) {
+  const seat = match && match.players ? match.players[seatId] : null;
+  return seat ? clients.get(seat.client_id) : null;
+}
+
+function sendAircraftError(client, message) {
+  if (!client) return;
+  safeSend(client.ws, {
+    type: "aircraft_error",
+    message: String(message || "Aircraft error.")
+  });
+}
+
+function sendAircraftActionRejected(client, reason) {
+  if (!client) return;
+  safeSend(client.ws, {
+    type: "aircraft_action_rejected",
+    reason: String(reason || "Aircraft action rejected.")
+  });
+}
+
+function hasOtherAircraftQueueOrMatchForUser(userId, ignoredClientId) {
+  const targetUserId = Number(userId || 0);
+  const ignored = String(ignoredClientId || "");
+  if (targetUserId <= 0) return false;
+
+  for (const entry of aircraftQueue) {
+    if (Number(entry.user_id || 0) === targetUserId && String(entry.client_id || "") !== ignored) {
+      return true;
+    }
+  }
+
+  for (const match of aircraftMatches.values()) {
+    for (const seatId of ["A", "B"]) {
+      const seat = match.players && match.players[seatId] ? match.players[seatId] : null;
+      if (seat && Number(seat.user_id || 0) === targetUserId && String(seat.client_id || "") !== ignored) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function serializeAircraftMatchState(match) {
+  const state = serializeAircraftState(match.state);
+  state.match_id = match.match_id;
+  state.match_type = "aircraft";
+  return state;
+}
+
+function broadcastAircraftMatchState(match) {
+  if (!match) return;
+  match.state = serializeAircraftState(match.state);
+
+  for (const seatId of ["A", "B"]) {
+    const client = getAircraftClient(match, seatId);
+    if (!client) continue;
+    safeSend(client.ws, {
+      type: "aircraft_match_state",
+      match_id: match.match_id,
+      seat_id: seatId,
+      player_index: seatId === "A" ? 0 : 1,
+      state: serializeAircraftMatchState(match)
+    });
+  }
+}
+
+function sendAircraftBattleResult(match) {
+  for (const seatId of ["A", "B"]) {
+    const client = getAircraftClient(match, seatId);
+    if (!client) continue;
+    safeSend(client.ws, {
+      type: "aircraft_battle_result",
+      match_id: match.match_id,
+      result_text: String(match.state.result_text || "Aircraft battle finished."),
+      winner_index: match.state.winner_index
+    });
+  }
+}
+
+function cleanupAircraftMatch(matchId) {
+  const match = aircraftMatches.get(matchId);
+  if (!match) return;
+
+  for (const seatId of ["A", "B"]) {
+    const client = getAircraftClient(match, seatId);
+    if (client) {
+      client.aircraftMatchId = "";
+      client.aircraftSeatId = "";
+    }
+  }
+
+  aircraftMatches.delete(matchId);
+}
+
+function makeAircraftQueueEntry(client, message) {
+  const aircraftId = normalizeAircraftId(message.aircraft_id);
+  if (!aircraftId) {
+    return { ok: false, reason: "Invalid aircraft_id." };
+  }
+
+  const deckIds = Array.isArray(message.deck_ids) ? message.deck_ids.map((value) => String(value)) : null;
+  return {
+    ok: true,
+    entry: {
+      client_id: client.client_id,
+      user_id: client.user_id,
+      display_name: String(message.display_name || client.display_name || client.username || client.client_id),
+      aircraft_id: aircraftId,
+      deck_ids: deckIds,
+      joined_at: Date.now()
+    }
+  };
+}
+
+function tryMakeAircraftMatch() {
+  while (aircraftQueue.length >= 2) {
+    const entryA = aircraftQueue.shift();
+    const entryB = aircraftQueue.shift();
+    const clientA = clients.get(entryA.client_id);
+    const clientB = clients.get(entryB.client_id);
+
+    if (!clientA || !clientB || !clientA.ws || !clientB.ws || clientA.ws.readyState !== WebSocket.OPEN || clientB.ws.readyState !== WebSocket.OPEN) {
+      if (clientA) {
+        clientA.aircraftMatchId = "";
+        clientA.aircraftSeatId = "";
+      }
+      if (clientB) {
+        clientB.aircraftMatchId = "";
+        clientB.aircraftSeatId = "";
+      }
+      continue;
+    }
+
+    const matchId = makeId("aircraft_match", nextMatchNumber++);
+    let state = null;
+
+    try {
+      state = createAircraftMatchState({
+        player1_aircraft_id: entryA.aircraft_id,
+        player2_aircraft_id: entryB.aircraft_id,
+        player1_deck_ids: entryA.deck_ids,
+        player2_deck_ids: entryB.deck_ids
+      });
+    } catch (error) {
+      console.error("[AIRCRAFT MATCH CREATE ERROR]", error && error.stack ? error.stack : error);
+      sendAircraftError(clientA, "Aircraft match could not be created.");
+      sendAircraftError(clientB, "Aircraft match could not be created.");
+      continue;
+    }
+
+    const validation = validateAircraftState(state);
+    if (!validation.ok) {
+      sendAircraftError(clientA, validation.reason || "Invalid Aircraft state.");
+      sendAircraftError(clientB, validation.reason || "Invalid Aircraft state.");
+      continue;
+    }
+
+    console.log("[AIRCRAFT_STATE_CHECK] create match p1", {
+      aircraft: state.players[0].aircraft_id,
+      deck: state.players[0].deck?.length,
+      hand: state.players[0].hand?.length,
+      mana: state.players[0].mana,
+      max_mana: state.players[0].max_mana
+    });
+    console.log("[AIRCRAFT_STATE_CHECK] create match p2", {
+      aircraft: state.players[1].aircraft_id,
+      deck: state.players[1].deck?.length,
+      hand: state.players[1].hand?.length,
+      mana: state.players[1].mana,
+      max_mana: state.players[1].max_mana
+    });
+
+    const match = {
+      match_id: matchId,
+      type: "aircraft",
+      players: {
+        A: { ...entryA, connected: true },
+        B: { ...entryB, connected: true }
+      },
+      state,
+      created_at: Date.now(),
+      last_action_at: Date.now()
+    };
+
+    aircraftMatches.set(matchId, match);
+    clientA.aircraftMatchId = matchId;
+    clientA.aircraftSeatId = "A";
+    clientB.aircraftMatchId = matchId;
+    clientB.aircraftSeatId = "B";
+
+    safeSend(clientA.ws, {
+      type: "aircraft_match_found",
+      match_id: matchId,
+      seat_id: "A",
+      player_index: 0,
+      opponent_name: entryB.display_name,
+      state: serializeAircraftMatchState(match)
+    });
+    safeSend(clientB.ws, {
+      type: "aircraft_match_found",
+      match_id: matchId,
+      seat_id: "B",
+      player_index: 1,
+      opponent_name: entryA.display_name,
+      state: serializeAircraftMatchState(match)
+    });
+
+    console.log("[AIRCRAFT MATCH] created", matchId, entryA.display_name, "vs", entryB.display_name);
+  }
+}
+
+function handleAircraftDisconnect(client) {
+  removeClientFromAircraftQueue(client.client_id);
+
+  if (!client.aircraftMatchId) return;
+  const match = aircraftMatches.get(client.aircraftMatchId);
+  if (!match) return;
+
+  const seatId = findAircraftSeat(match, client.client_id);
+  if (!seatId || !match.players[seatId]) return;
+
+  match.players[seatId].connected = false;
+  match.players[seatId].disconnected_at = Date.now();
+
+  const otherSeatId = seatId === "A" ? "B" : "A";
+  const otherClient = getAircraftClient(match, otherSeatId);
+  if (otherClient) {
+    safeSend(otherClient.ws, {
+      type: "aircraft_opponent_connection_lost",
+      match_id: match.match_id,
+      state: serializeAircraftMatchState(match)
+    });
+  }
+}
+
+function expireDisconnectedAircraftMatches() {
+  const now = Date.now();
+  for (const match of aircraftMatches.values()) {
+    for (const seatId of ["A", "B"]) {
+      const seat = match.players[seatId];
+      if (seat && seat.connected === false && Number(seat.disconnected_at || 0) > 0) {
+        if (now - Number(seat.disconnected_at) >= 60000) {
+          const winnerSeatId = seatId === "A" ? "B" : "A";
+          match.state.battle_over = true;
+          match.state.winner_index = winnerSeatId === "A" ? 0 : 1;
+          match.state.result_text = "Opponent disconnected. Aircraft battle finished.";
+          sendAircraftBattleResult(match);
+          cleanupAircraftMatch(match.match_id);
+          break;
+        }
+      }
+    }
+  }
+}
+
+// ============================================================================
 // WebSocket
 // ============================================================================
 async function handleClientMessage(client, message) {
@@ -2169,9 +2523,29 @@ async function handleClientMessage(client, message) {
       const user = await authService.getUserBySessionToken(String(message.token || ""));
 
       if (!user) {
+        removeClientFromQueue(client.client_id);
+        removeClientFromAircraftQueue(client.client_id);
+        client.queued = false;
         client.is_authenticated = false;
         safeSend(client.ws, { type: "auth_error", message: "Invalid token" });
         return;
+      }
+
+      const previousUserId = Number(client.user_id || 0);
+      const nextUserId = Number(user.id || 0);
+      if (previousUserId > 0 && previousUserId !== nextUserId) {
+        if (client.match_id) {
+          safeSend(client.ws, { type: "auth_error", message: "Leave the active match before switching accounts." });
+          return;
+        }
+        if (client.aircraftMatchId) {
+          safeSend(client.ws, { type: "auth_error", message: "Leave the active Aircraft match before switching accounts." });
+          return;
+        }
+        removeClientFromQueue(client.client_id);
+        removeClientFromAircraftQueue(client.client_id);
+        client.queued = false;
+        console.log("[QUEUE CLEANUP]", "reason=auth_user_switch", "client_id=", client.client_id, "old_user_id=", previousUserId, "new_user_id=", nextUserId);
       }
 
       client.user_id = user.id;
@@ -2221,6 +2595,8 @@ async function handleClientMessage(client, message) {
         sendError(client.ws, "Leave the active match before entering another queue.");
         return;
       }
+
+      pruneStaleQueueEntries("queue_join");
 
       if (hasOtherQueueOrMatchForUser(client.user_id, client.client_id)) {
         sendError(client.ws, "This account is already queued or in a match.");
@@ -2365,6 +2741,174 @@ async function handleClientMessage(client, message) {
       client.queued = false;
       safeSend(client.ws, { type: "queue_left" });
       console.log("[QUEUE] left", client.client_id, "queue=", queue.length);
+      return;
+    }
+
+    case "aircraft_queue_join": {
+      if (client.match_id || client.aircraftMatchId) {
+        sendAircraftError(client, "Leave the active match before entering Aircraft queue.");
+        return;
+      }
+
+      if (client.queued || hasOtherQueueOrMatchForUser(client.user_id, client.client_id) || hasOtherAircraftQueueOrMatchForUser(client.user_id, client.client_id)) {
+        sendAircraftError(client, "This account is already queued or in a match.");
+        return;
+      }
+
+      const queueEntry = makeAircraftQueueEntry(client, message);
+      if (!queueEntry.ok) {
+        sendAircraftError(client, queueEntry.reason);
+        return;
+      }
+
+      removeClientFromAircraftQueue(client.client_id);
+      aircraftQueue.push(queueEntry.entry);
+      safeSend(client.ws, {
+        type: "aircraft_queue_joined",
+        queue_size: aircraftQueue.length
+      });
+      console.log("[AIRCRAFT QUEUE] joined", client.client_id, "aircraft=", queueEntry.entry.aircraft_id, "deck_ids=", queueEntry.entry.deck_ids ? queueEntry.entry.deck_ids.length : 0, "queue=", aircraftQueue.length);
+      tryMakeAircraftMatch();
+      return;
+    }
+
+    case "aircraft_queue_leave": {
+      removeClientFromAircraftQueue(client.client_id);
+      safeSend(client.ws, { type: "aircraft_queue_left" });
+      console.log("[AIRCRAFT QUEUE] left", client.client_id, "queue=", aircraftQueue.length);
+      return;
+    }
+
+    case "aircraft_rejoin_match": {
+      const matchId = String(message.match_id || "");
+      const seatId = String(message.seat_id || "");
+      const match = aircraftMatches.get(matchId);
+
+      if (!match || (seatId !== "A" && seatId !== "B") || !match.players[seatId]) {
+        safeSend(client.ws, {
+          type: "aircraft_rejoin_failed",
+          match_id: matchId,
+          message: "Aircraft match was not found."
+        });
+        return;
+      }
+
+      const seat = match.players[seatId];
+      if (Number(seat.user_id || 0) > 0 && Number(seat.user_id || 0) !== Number(client.user_id || 0)) {
+        safeSend(client.ws, {
+          type: "aircraft_rejoin_failed",
+          match_id: matchId,
+          message: "This account cannot rejoin that Aircraft seat."
+        });
+        return;
+      }
+
+      removeClientFromAircraftQueue(client.client_id);
+      client.aircraftMatchId = matchId;
+      client.aircraftSeatId = seatId;
+      seat.client_id = client.client_id;
+      seat.connected = true;
+      seat.disconnected_at = 0;
+      match.last_action_at = Date.now();
+
+      safeSend(client.ws, {
+        type: "aircraft_rejoin_ok",
+        match_id: matchId,
+        seat_id: seatId,
+        player_index: seatId === "A" ? 0 : 1,
+        state: serializeAircraftMatchState(match)
+      });
+      broadcastAircraftMatchState(match);
+
+      const otherClient = getAircraftClient(match, seatId === "A" ? "B" : "A");
+      if (otherClient) {
+        safeSend(otherClient.ws, {
+          type: "aircraft_opponent_rejoined",
+          match_id: matchId
+        });
+      }
+      return;
+    }
+
+    case "aircraft_battle_action":
+    case "aircraft_surrender": {
+      const matchId = String(message.match_id || client.aircraftMatchId || "");
+      const match = aircraftMatches.get(matchId);
+      if (!match) {
+        sendAircraftActionRejected(client, "Aircraft match not found.");
+        return;
+      }
+
+      const seatId = findAircraftSeat(match, client.client_id);
+      if (!seatId || client.aircraftMatchId !== matchId || client.aircraftSeatId !== seatId) {
+        sendAircraftActionRejected(client, "You are not in this Aircraft match.");
+        return;
+      }
+
+      const playerIndex = seatId === "A" ? 0 : 1;
+      const action = type === "aircraft_surrender"
+        ? { game: "aircraft", schema_version: 1, action_type: "surrender", payload: {} }
+        : (message.action && typeof message.action === "object" ? message.action : {});
+      const actionType = String(action.action_type || action.type || "");
+
+      if (!actionType) {
+        sendAircraftActionRejected(client, "Invalid Aircraft action.");
+        return;
+      }
+
+      if (actionType === "reset_battle") {
+        sendAircraftActionRejected(client, "reset_battle is disabled online.");
+        return;
+      }
+
+      if (actionType !== "surrender" && Number(match.state.current_player_index || 0) !== playerIndex) {
+        sendAircraftActionRejected(client, "It is not your Aircraft turn.");
+        return;
+      }
+
+      const beforePlayer = Array.isArray(match.state.players) ? match.state.players[playerIndex] : null;
+      const actionOptions = { client_id: client.client_id };
+      if (actionType === "extra_draw" && beforePlayer) {
+        actionOptions.before_deck = Array.isArray(beforePlayer.deck) ? beforePlayer.deck.length : 0;
+        actionOptions.before_hand = Array.isArray(beforePlayer.hand) ? beforePlayer.hand.length : 0;
+      }
+
+      let result = null;
+      try {
+        result = applyAircraftAction(match.state, action, actionOptions);
+      } catch (error) {
+        console.error("[AIRCRAFT ACTION ERROR]", error && error.stack ? error.stack : error);
+        sendAircraftActionRejected(client, "Server failed while resolving Aircraft action.");
+        return;
+      }
+
+      if (!result || result.ok !== true) {
+        sendAircraftActionRejected(client, result && result.reason ? result.reason : "Aircraft action rejected.");
+        return;
+      }
+
+      match.state = serializeAircraftState(result.state);
+      match.last_action_at = Date.now();
+      if (actionType === "end_turn") {
+        console.log("[AIRCRAFT_STATE_CHECK] after end_turn", {
+          turn_number: match.state.turn_number,
+          current_player_index: match.state.current_player_index,
+          p1_mana: match.state.players[0].mana,
+          p1_max_mana: match.state.players[0].max_mana,
+          p1_deck: match.state.players[0].deck?.length,
+          p1_hand: match.state.players[0].hand?.length,
+          p2_mana: match.state.players[1].mana,
+          p2_max_mana: match.state.players[1].max_mana,
+          p2_deck: match.state.players[1].deck?.length,
+          p2_hand: match.state.players[1].hand?.length
+        });
+      }
+      broadcastAircraftMatchState(match);
+
+      if (match.state.battle_over) {
+        sendAircraftBattleResult(match);
+        cleanupAircraftMatch(matchId);
+      }
       return;
     }
 
@@ -2532,6 +3076,7 @@ function handleDisconnect(connection) {
     console.log("[CLIENT] disconnected", client.client_id);
 
     removeClientFromQueue(client.client_id);
+    handleAircraftDisconnect(client);
 
     if (client.match_id) {
       const match = matches.get(client.match_id);
@@ -2677,7 +3222,9 @@ wss.on("connection", (ws, req) => {
     is_authenticated: false,
     queued: false,
     match_id: "",
-    seat_id: ""
+    seat_id: "",
+    aircraftMatchId: "",
+    aircraftSeatId: ""
   };
 
   clients.set(clientId, client);
